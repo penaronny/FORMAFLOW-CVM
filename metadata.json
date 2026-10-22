@@ -1,0 +1,6 @@
+{
+  "name": "FormFlow - Generador de Formularios Internos",
+  "description": "Plataforma interna para crear formularios dinámicos, compartirlos mediante enlaces únicos seguros y gestionar respuestas en tiempo real.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
