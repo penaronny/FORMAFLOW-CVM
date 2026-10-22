@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Field, Form } from '../types/form.js';
+import { Field, Form, FormResponseRecord } from '../types/form.js';
 import { DataService, getAgencyConfig } from '../services/dataService.js';
 import { decodeFormFromUrlData, formatAnswersForWhatsApp } from '../utils/formEncoding.js';
+import { exportSingleResponseToPDF } from '../utils/pdfExport.js';
 import { 
   CheckCircle, 
   AlertCircle, 
@@ -178,27 +179,13 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
 
   const handleDownloadReceipt = () => {
     if (!form) return;
-    let content = `COMPROBANTE DE ENVÍO - ${agencyConfig.name.toUpperCase()}\n`;
-    content += `Formulario: ${form.title}\n`;
-    content += `Fecha de Registro: ${new Date(submittedAt || Date.now()).toLocaleString('es-ES')}\n`;
-    content += `--------------------------------------------------\n\n`;
-
-    (form.fields || []).forEach((f, i) => {
-      content += `${i + 1}. ${f.label}\n`;
-      content += `Respuesta: ${answers[f.id] || '(Sin respuesta)'}\n\n`;
-    });
-
-    content += `--------------------------------------------------\n`;
-    content += `Este documento es un comprobante de que sus respuestas han sido procesadas.\n`;
-
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `Comprobante_${form.slug}_${Date.now()}.txt`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const tempResp: FormResponseRecord = {
+      id: `COMPROBANTE-${Date.now().toString().slice(-6)}`,
+      form_id: form.id,
+      submitted_at: submittedAt || new Date().toISOString(),
+      answers,
+    };
+    exportSingleResponseToPDF(form, form.fields || [], tempResp);
   };
 
   if (loading) {

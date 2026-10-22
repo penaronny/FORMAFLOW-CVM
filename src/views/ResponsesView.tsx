@@ -2,11 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { Field, Form, FormResponseRecord } from '../types/form.js';
 import { DataService } from '../services/dataService.js';
 import { buildClientFormLink } from '../utils/formEncoding.js';
+import { exportResponsesToPDF, exportSingleResponseToPDF } from '../utils/pdfExport.js';
 import { 
   ArrowLeft, 
   Search, 
   Calendar, 
   Download, 
+  FileText,
   ExternalLink, 
   Copy, 
   Check, 
@@ -16,7 +18,8 @@ import {
   X, 
   AlertCircle,
   Inbox,
-  RefreshCw
+  RefreshCw,
+  ShieldCheck
 } from 'lucide-react';
 
 interface ResponsesViewProps {
@@ -100,30 +103,10 @@ export const ResponsesView: React.FC<ResponsesViewProps> = ({ formId, onNavigate
     return true;
   });
 
-  // Export to CSV
-  const handleExportCSV = () => {
+  // Export to PDF
+  const handleExportPDF = () => {
     if (!form || fields.length === 0 || responses.length === 0) return;
-
-    // Headers
-    const headers = ['ID Respuesta', 'Fecha de Envío', ...fields.map((f) => `"${f.label.replace(/"/g, '""')}"`)];
-    const rows = filteredResponses.map((r) => {
-      const dateFormatted = new Date(r.submitted_at).toLocaleString('es-ES');
-      const answersCols = fields.map((f) => {
-        const val = r.answers[f.id] || '';
-        return `"${String(val).replace(/"/g, '""')}"`;
-      });
-      return [r.id, `"${dateFormatted}"`, ...answersCols].join(',');
-    });
-
-    const csvContent = '\uFEFF' + [headers.join(','), ...rows].join('\n'); // UTF-8 BOM for Excel
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `respuestas_${form.slug}_${new Date().toISOString().slice(0, 10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    exportResponsesToPDF(form, fields, filteredResponses);
   };
 
   const clearFilters = () => {
@@ -168,7 +151,7 @@ export const ResponsesView: React.FC<ResponsesViewProps> = ({ formId, onNavigate
           <button
             type="button"
             onClick={() => onNavigate('forms')}
-            className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-slate-800 mb-2 transition-colors"
+            className="inline-flex items-center gap-1 text-xs font-semibold text-slate-500 hover:text-slate-800 mb-2 transition-colors cursor-pointer"
           >
             <ArrowLeft className="w-4 h-4" />
             <span>Volver a Mis Formularios</span>
@@ -189,16 +172,23 @@ export const ResponsesView: React.FC<ResponsesViewProps> = ({ formId, onNavigate
             </span>
           </div>
 
-          <p className="text-xs text-slate-500 mt-1">
-            Respuestas almacenadas en la base de datos centralizada
-          </p>
+          <div className="flex flex-wrap items-center gap-3 mt-1.5">
+            <p className="text-xs text-slate-500">
+              Respuestas almacenadas en base de datos centralizada
+            </p>
+            <span className="text-slate-300">•</span>
+            <div className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Protección y Encriptación AES-256 en Reposo</span>
+            </div>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={handleCopyLink}
-            className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
+            className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs cursor-pointer"
           >
             {copiedLink ? (
               <>
@@ -217,7 +207,7 @@ export const ResponsesView: React.FC<ResponsesViewProps> = ({ formId, onNavigate
             href={`/#f/${form.slug}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
+            className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs cursor-pointer"
           >
             <ExternalLink className="w-3.5 h-3.5 text-slate-500" />
             <span>Abrir Formulario</span>
@@ -225,12 +215,12 @@ export const ResponsesView: React.FC<ResponsesViewProps> = ({ formId, onNavigate
 
           <button
             type="button"
-            onClick={handleExportCSV}
+            onClick={handleExportPDF}
             disabled={responses.length === 0}
-            className="inline-flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white shadow-sm transition-colors disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Descargar CSV</span>
+            <span>Descargar PDF</span>
           </button>
         </div>
       </div>
@@ -452,11 +442,20 @@ export const ResponsesView: React.FC<ResponsesViewProps> = ({ formId, onNavigate
               })}
             </div>
 
-            <div className="pt-4 border-t border-slate-100 flex justify-end">
+            <div className="pt-4 border-t border-slate-100 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => exportSingleResponseToPDF(form, fields, selectedResponse)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+              >
+                <FileText className="w-4 h-4 text-blue-600" />
+                <span>Descargar Ficha en PDF</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => setSelectedResponse(null)}
-                className="px-4 py-2 bg-slate-800 text-white text-xs font-semibold rounded-xl hover:bg-slate-900 transition-colors"
+                className="px-4 py-2 bg-slate-800 text-white text-xs font-semibold rounded-xl hover:bg-slate-900 transition-colors cursor-pointer"
               >
                 Cerrar
               </button>

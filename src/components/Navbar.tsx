@@ -62,8 +62,15 @@ export const Navbar: React.FC<NavbarProps> = ({ currentView, onNavigate }) => {
                     {user.name.charAt(0).toUpperCase()}
                   </div>
                   <div className="hidden lg:block text-xs">
-                    <p className="font-medium text-slate-200 line-clamp-1">{user.name}</p>
-                    <p className="text-slate-400 flex items-center gap-1">
+                    <div className="flex items-center gap-1.5">
+                      <p className="font-medium text-slate-200 line-clamp-1">{user.name}</p>
+                      {user.role === 'admin' && (
+                        <span className="text-[9px] font-bold bg-indigo-500/30 text-indigo-300 border border-indigo-400/40 px-1.5 py-0.2 rounded">
+                          ADMIN
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-slate-400 flex items-center gap-1 mt-0.5">
                       <ShieldCheck className="w-3 h-3 text-emerald-400" />
                       {user.email}
                     </p>

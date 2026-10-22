@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { db, verifyPassword } from './db.js';
 import { authMiddleware, AuthenticatedRequest, createSession, deleteSession } from './auth.js';
 import { validateEmail, validatePassword, generateSlug, validateFormDefinition, validateFormSubmission } from '../utils/validation.js';
+import { encryptSensitiveText, decryptSensitiveText } from '../utils/encryption.js';
 import { Field } from '../types/form.js';
 
 export const apiRouter = Router();
@@ -11,55 +12,12 @@ export const apiRouter = Router();
 // AUTHENTICATION ROUTES
 // ==========================================
 
-apiRouter.post('/auth/register', (req, res) => {
-  try {
-    const { name, email, password } = req.body;
-
-    if (!name || typeof name !== 'string' || !name.trim()) {
-      return res.status(400).json({ error: 'El nombre es obligatorio' });
-    }
-
-    if (!validateEmail(email)) {
-      return res.status(400).json({ error: 'Formato de correo electrónico inválido' });
-    }
-
-    const passValidation = validatePassword(password);
-    if (!passValidation.isValid) {
-      return res.status(400).json({ error: passValidation.error });
-    }
-
-    const normalizedEmail = email.trim().toLowerCase();
-
-    // Check uniqueness
-    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(normalizedEmail);
-    if (existing) {
-      return res.status(409).json({ error: 'Ya existe una cuenta con este correo electrónico' });
-    }
-
-    const userId = `usr-${crypto.randomUUID()}`;
-    const now = new Date().toISOString();
-    const salt = crypto.randomBytes(16).toString('hex');
-    const passwordHash = `${salt}:${crypto.scryptSync(password, salt, 64).toString('hex')}`;
-
-    db.prepare(`
-      INSERT INTO users (id, name, email, password_hash, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(userId, name.trim(), normalizedEmail, passwordHash, now);
-
-    const token = createSession(userId);
-    res.cookie('formflow_session', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
-
-    const user = { id: userId, name: name.trim(), email: normalizedEmail, created_at: now };
-    return res.status(201).json({ user, token });
-  } catch (err: any) {
-    console.error('Register error:', err);
-    return res.status(500).json({ error: 'Error interno al registrar usuario' });
-  }
+apiRouter.post('/auth/register', (_req, res) => {
+  // Public registration is disabled per security requirements.
+  // Only the administrator (law@ronnypena.com.do) can create advisor accounts.
+  return res.status(403).json({
+    error: 'El registro público está deshabilitado por seguridad. Solo el Administrador puede dar de alta nuevos asesores desde el panel de control.',
+  });
 });
 
 apiRouter.post('/auth/login', (req, res) => {
@@ -72,13 +30,13 @@ apiRouter.post('/auth/login', (req, res) => {
 
     const normalizedEmail = String(email).trim().toLowerCase();
     const row = db.prepare(`
-      SELECT id, name, email, password_hash, created_at
+      SELECT id, name, email, password_hash, role, created_at
       FROM users
       WHERE email = ?
-    `).get(normalizedEmail) as { id: string; name: string; email: string; password_hash: string; created_at: string } | undefined;
+    `).get(normalizedEmail) as { id: string; name: string; email: string; password_hash: string; role?: string; created_at: string } | undefined;
 
     if (!row || !verifyPassword(password, row.password_hash)) {
-      return res.status(401).json({ error: 'Credenciales incorrectas' });
+      return res.status(401).json({ error: 'Credenciales incorrectas. Verifique su correo o contraseña.' });
     }
 
     const token = createSession(row.id);
@@ -89,7 +47,13 @@ apiRouter.post('/auth/login', (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
-    const user = { id: row.id, name: row.name, email: row.email, created_at: row.created_at };
+    const user = {
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      role: (row.role as 'admin' | 'advisor') || 'advisor',
+      created_at: row.created_at,
+    };
     return res.json({ user, token });
   } catch (err: any) {
     console.error('Login error:', err);
@@ -111,22 +75,113 @@ apiRouter.get('/auth/me', authMiddleware, (req: AuthenticatedRequest, res: Respo
 });
 
 // ==========================================
+// ADMIN USER MANAGEMENT ROUTES
+// ==========================================
+
+apiRouter.get('/admin/users', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ error: 'Acceso restringido. Solo el Administrador puede listar usuarios.' });
+    }
+
+    const users = db.prepare(`
+      SELECT id, name, email, role, created_at
+      FROM users
+      ORDER BY created_at DESC
+    `).all() as any[];
+
+    return res.json({ users });
+  } catch (err: any) {
+    console.error('Error listing users:', err);
+    return res.status(500).json({ error: 'Error al listar usuarios' });
+  }
+});
+
+apiRouter.post('/admin/users', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ error: 'Acceso restringido. Solo el Administrador puede crear nuevos usuarios.' });
+    }
+
+    const { name, email, password, role = 'advisor' } = req.body;
+
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ error: 'El nombre del asesor es obligatorio' });
+    }
+
+    if (!validateEmail(email)) {
+      return res.status(400).json({ error: 'Formato de correo electrónico inválido' });
+    }
+
+    const passValidation = validatePassword(password);
+    if (!passValidation.isValid) {
+      return res.status(400).json({ error: passValidation.error });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(normalizedEmail);
+    if (existing) {
+      return res.status(409).json({ error: 'Ya existe un usuario con este correo electrónico' });
+    }
+
+    const userId = `usr-${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    const salt = crypto.randomBytes(16).toString('hex');
+    const passwordHash = `${salt}:${crypto.scryptSync(password, salt, 64).toString('hex')}`;
+
+    db.prepare(`
+      INSERT INTO users (id, name, email, password_hash, role, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(userId, name.trim(), normalizedEmail, passwordHash, role, now);
+
+    const newUser = {
+      id: userId,
+      name: name.trim(),
+      email: normalizedEmail,
+      role,
+      created_at: now,
+    };
+
+    return res.status(201).json({
+      user: newUser,
+      message: `Asesor ${name.trim()} creado exitosamente`,
+    });
+  } catch (err: any) {
+    console.error('Error creating user by admin:', err);
+    return res.status(500).json({ error: 'Error al registrar asesor' });
+  }
+});
+
+// ==========================================
 // FORM MANAGEMENT ROUTES (Authenticated)
 // ==========================================
 
 apiRouter.get('/forms', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
   try {
     const userId = req.user!.id;
-    const forms = db.prepare(`
-      SELECT 
-        f.id, f.user_id, f.title, f.description, f.slug, f.is_active, f.created_at, f.updated_at,
-        COUNT(r.id) as response_count
-      FROM forms f
-      LEFT JOIN responses r ON r.form_id = f.id
-      WHERE f.user_id = ?
-      GROUP BY f.id
-      ORDER BY f.created_at DESC
-    `).all(userId) as any[];
+    const isAdmin = req.user!.role === 'admin';
+    const forms = (
+      isAdmin
+        ? db.prepare(`
+            SELECT 
+              f.id, f.user_id, f.title, f.description, f.slug, f.is_active, f.created_at, f.updated_at,
+              COUNT(r.id) as response_count
+            FROM forms f
+            LEFT JOIN responses r ON r.form_id = f.id
+            GROUP BY f.id
+            ORDER BY f.created_at DESC
+          `).all()
+        : db.prepare(`
+            SELECT 
+              f.id, f.user_id, f.title, f.description, f.slug, f.is_active, f.created_at, f.updated_at,
+              COUNT(r.id) as response_count
+            FROM forms f
+            LEFT JOIN responses r ON r.form_id = f.id
+            WHERE f.user_id = ?
+            GROUP BY f.id
+            ORDER BY f.created_at DESC
+          `).all(userId)
+    ) as any[];
 
     const formatted = forms.map((f) => ({
       ...f,
@@ -356,15 +411,21 @@ apiRouter.delete('/forms/:id', authMiddleware, (req: AuthenticatedRequest, res: 
   }
 });
 
-apiRouter.get('/forms/:id/responses', authMiddleware, (req: AuthenticatedRequest, res: Response) => {
+apiRouter.get('/forms/:id/responses', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const userId = req.user!.id;
+    const userRole = req.user!.role || 'advisor';
 
-    // Check ownership
-    const form = db.prepare('SELECT id, title, slug, is_active FROM forms WHERE id = ? AND user_id = ?').get(id, userId) as any;
+    // Check ownership or admin privilege
+    const form = db.prepare(`
+      SELECT id, title, slug, is_active
+      FROM forms
+      WHERE id = ? AND (user_id = ? OR ? = 'admin')
+    `).get(id, userId, userRole) as any;
+
     if (!form) {
-      return res.status(404).json({ error: 'Formulario no encontrado' });
+      return res.status(404).json({ error: 'Formulario no encontrado o sin permisos suficientes' });
     }
 
     // Get fields
@@ -405,11 +466,21 @@ apiRouter.get('/forms/:id/responses', authMiddleware, (req: AuthenticatedRequest
       answersMap[ans.response_id][ans.field_id] = ans.value;
     }
 
-    const formattedResponses = responses.map((r) => ({
-      id: r.id,
-      submitted_at: r.submitted_at,
-      answers: answersMap[r.id] || {},
-    }));
+    // Decrypt all sensitive answers at rest before delivering to authorized user
+    const formattedResponses = await Promise.all(
+      responses.map(async (r) => {
+        const rawAnswers = answersMap[r.id] || {};
+        const decryptedAnswers: Record<string, string> = {};
+        for (const [fieldId, val] of Object.entries(rawAnswers)) {
+          decryptedAnswers[fieldId] = await decryptSensitiveText(val);
+        }
+        return {
+          id: r.id,
+          submitted_at: r.submitted_at,
+          answers: decryptedAnswers,
+        };
+      })
+    );
 
     return res.json({
       form,
@@ -472,7 +543,7 @@ apiRouter.get('/public/forms/:slug', (req, res) => {
   }
 });
 
-apiRouter.post('/public/forms/:slug/submit', (req, res) => {
+apiRouter.post('/public/forms/:slug/submit', async (req, res) => {
   try {
     const { slug } = req.params;
     const { answers = {} } = req.body;
@@ -515,6 +586,14 @@ apiRouter.post('/public/forms/:slug/submit', (req, res) => {
     const responseId = `resp-${crypto.randomUUID()}`;
     const now = new Date().toISOString();
 
+    // Prepare encrypted answers before database transaction
+    const encryptedEntries: { fieldId: string; storedValue: string }[] = [];
+    for (const field of fields) {
+      const rawValue = answers[field.id] !== undefined && answers[field.id] !== null ? String(answers[field.id]).trim() : '';
+      const storedValue = rawValue ? await encryptSensitiveText(rawValue) : '';
+      encryptedEntries.push({ fieldId: field.id, storedValue });
+    }
+
     db.exec('BEGIN TRANSACTION;');
     try {
       db.prepare(`
@@ -527,9 +606,8 @@ apiRouter.post('/public/forms/:slug/submit', (req, res) => {
         VALUES (?, ?, ?, ?)
       `);
 
-      for (const field of fields) {
-        const value = answers[field.id] !== undefined && answers[field.id] !== null ? String(answers[field.id]).trim() : '';
-        insertAnswer.run(`ans-${crypto.randomUUID()}`, responseId, field.id, value);
+      for (const entry of encryptedEntries) {
+        insertAnswer.run(`ans-${crypto.randomUUID()}`, responseId, entry.fieldId, entry.storedValue);
       }
 
       db.exec('COMMIT;');
@@ -540,7 +618,7 @@ apiRouter.post('/public/forms/:slug/submit', (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: '¡Gracias por tu respuesta! Hemos registrado tus datos exitosamente.',
+      message: '¡Gracias por tu respuesta! Hemos registrado tus datos de manera segura y encriptada.',
       submittedAt: now,
     });
   } catch (err: any) {

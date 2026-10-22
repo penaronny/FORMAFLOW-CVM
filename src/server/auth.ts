@@ -29,11 +29,11 @@ export function getUserByToken(token: string): User | null {
   const now = Date.now();
 
   const row = db.prepare(`
-    SELECT u.id, u.name, u.email, u.created_at, s.expires_at
+    SELECT u.id, u.name, u.email, u.role, u.created_at, s.expires_at
     FROM sessions s
     JOIN users u ON s.user_id = u.id
     WHERE s.token = ? AND s.expires_at > ?
-  `).get(token, now) as (User & { expires_at: number }) | undefined;
+  `).get(token, now) as (User & { role?: string; expires_at: number }) | undefined;
 
   if (!row) {
     // If expired, clean it up
@@ -45,6 +45,7 @@ export function getUserByToken(token: string): User | null {
     id: row.id,
     name: row.name,
     email: row.email,
+    role: (row.role as any) || 'advisor',
     created_at: row.created_at,
   };
 }

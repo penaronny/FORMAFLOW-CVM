@@ -27,6 +27,7 @@ export interface User {
   id: string;
   name: string;
   email: string;
+  role?: 'admin' | 'advisor';
   created_at: string;
 }
 

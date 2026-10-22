@@ -1,10 +1,12 @@
 import { Form, Field, FormResponseRecord, User } from '../types/form.js';
-import { generateSlug, validateFormDefinition } from '../utils/validation.js';
+import { generateSlug, validateFormDefinition, validateEmail, validatePassword } from '../utils/validation.js';
+import { encryptAnswersMap, decryptAnswersMap } from '../utils/encryption.js';
 
 const STORAGE_KEY_FORMS = 'formflow_forms_v2';
 const STORAGE_KEY_RESPONSES = 'formflow_responses_v2';
 const STORAGE_KEY_USER = 'formflow_local_user_v2';
 const STORAGE_KEY_CONFIG = 'formflow_agency_config_v2';
+const STORAGE_KEY_ADVISORS = 'formflow_advisors_v2';
 
 export interface AgencyConfig {
   name: string;
@@ -14,6 +16,14 @@ export interface AgencyConfig {
 export const defaultAgencyConfig: AgencyConfig = {
   name: 'Asesores Visa',
   phone: '',
+};
+
+export const DEFAULT_ADMIN_USER: User = {
+  id: 'usr-admin-master',
+  name: 'Ronny Peña (Administrador)',
+  email: 'law@ronnypena.com.do',
+  role: 'admin',
+  created_at: '2026-01-01T00:00:00.000Z',
 };
 
 export function getAgencyConfig(): AgencyConfig {
@@ -29,13 +39,6 @@ export function saveAgencyConfig(config: AgencyConfig) {
     localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(config));
   } catch {}
 }
-
-const DEFAULT_DEMO_USER: User = {
-  id: 'usr-asesores-visa',
-  name: 'Asesor Principal (Asesores Visa)',
-  email: 'contacto@asesoresvisa.com',
-  created_at: new Date().toISOString(),
-};
 
 const DEFAULT_FORMS: Form[] = [
   {
@@ -267,48 +270,47 @@ export const DataService = {
       } catch {}
     }
 
-    // Standalone fallback: allow demo login or any valid local login
+    // Standalone fallback: validate against master admin or registered advisors
     const normalizedEmail = email.trim().toLowerCase();
-    const user: User = {
-      id: `usr-${Date.now()}`,
-      name: normalizedEmail.includes('demo') ? 'Asesor Demo (Asesores Visa)' : normalizedEmail.split('@')[0],
-      email: normalizedEmail,
-      created_at: new Date().toISOString(),
-    };
-    localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(user));
-    return { success: true, user };
-  },
-
-  // Register
-  async register(name: string, email: string, pass: string): Promise<{ success: boolean; user?: User; error?: string }> {
-    const online = await checkServerAvailability();
-    if (online) {
-      try {
-        const res = await fetch('/api/auth/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, email, password: pass }),
-        });
-        const contentType = res.headers.get('content-type') || '';
-        if (contentType.includes('application/json')) {
-          const data = await res.json();
-          if (res.ok) {
-            localStorage.setItem('formflow_token', data.token);
-            return { success: true, user: data.user };
-          }
-          return { success: false, error: data.error };
-        }
-      } catch {}
+    
+    // Master admin account
+    if (normalizedEmail === 'law@ronnypena.com.do' && pass === 'Escafowne1.') {
+      localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(DEFAULT_ADMIN_USER));
+      return { success: true, user: DEFAULT_ADMIN_USER };
     }
 
-    const user: User = {
-      id: `usr-${Date.now()}`,
-      name: name.trim(),
-      email: email.trim().toLowerCase(),
-      created_at: new Date().toISOString(),
+    // Check advisors in local storage
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_ADVISORS);
+      if (raw) {
+        const advisors: any[] = JSON.parse(raw);
+        const match = advisors.find((a) => a.email.toLowerCase() === normalizedEmail && a.storedPass === pass);
+        if (match) {
+          const user: User = {
+            id: match.id,
+            name: match.name,
+            email: match.email,
+            role: match.role || 'advisor',
+            created_at: match.created_at,
+          };
+          localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(user));
+          return { success: true, user };
+        }
+      }
+    } catch {}
+
+    return {
+      success: false,
+      error: 'Credenciales inválidas. Compruebe el correo y contraseña o contacte al administrador.',
     };
-    localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(user));
-    return { success: true, user };
+  },
+
+  // Register is locked down (only admin can create users)
+  async register(_name: string, _email: string, _pass: string): Promise<{ success: boolean; user?: User; error?: string }> {
+    return {
+      success: false,
+      error: 'El registro público está desactivado. Solo el administrador puede crear nuevos usuarios.',
+    };
   },
 
   // Logout
@@ -482,7 +484,7 @@ export const DataService = {
     return true;
   },
 
-  // Get responses for a form
+  // Get responses for a form (with AES-256 decryption)
   async getResponses(formId: string): Promise<{ form: Form | null; fields: Field[]; responses: FormResponseRecord[] }> {
     const online = await checkServerAvailability();
     if (online) {
@@ -498,15 +500,24 @@ export const DataService = {
     }
 
     const form = await this.getFormById(formId);
-    const responses = getLocalResponses(formId);
+    const rawResponses = getLocalResponses(formId);
+
+    // Decrypt all answers stored in localStorage
+    const decryptedResponses = await Promise.all(
+      rawResponses.map(async (r) => ({
+        ...r,
+        answers: await decryptAnswersMap(r.answers || {}),
+      }))
+    );
+
     return {
       form,
       fields: form?.fields || [],
-      responses,
+      responses: decryptedResponses,
     };
   },
 
-  // Submit public form response
+  // Submit public form response (with AES-256-GCM encryption at rest)
   async submitPublicForm(slug: string, answers: Record<string, string>, localFormRef?: Form | null): Promise<{ success: boolean; message: string; submittedAt: string }> {
     const now = new Date().toISOString();
     const online = await checkServerAvailability();
@@ -528,23 +539,121 @@ export const DataService = {
       } catch {}
     }
 
-    // If local or offline, save to local storage if form found
+    // If local or offline, encrypt answers before saving to localStorage
     const forms = getLocalForms();
     const target = localFormRef || forms.find((f) => f.slug === slug);
     if (target) {
+      const encryptedAnswers = await encryptAnswersMap(answers);
       const newResponse: FormResponseRecord = {
         id: `resp-${Date.now()}`,
         form_id: target.id,
         submitted_at: now,
-        answers,
+        answers: encryptedAnswers,
       };
       saveLocalResponse(target.id, newResponse);
     }
 
     return {
       success: true,
-      message: '¡Gracias por tu respuesta! Hemos registrado tus datos exitosamente.',
+      message: '¡Gracias por tu respuesta! Hemos registrado tus datos de manera segura y confidencial.',
       submittedAt: now,
     };
+  },
+
+  // Admin: Get list of advisors
+  async getAdvisors(): Promise<User[]> {
+    const online = await checkServerAvailability();
+    if (online) {
+      try {
+        const token = localStorage.getItem('formflow_token');
+        const headers: Record<string, string> = {};
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+        const res = await fetch('/api/admin/users', { headers });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.users)) return data.users;
+        }
+      } catch {}
+    }
+
+    // Local storage fallback for standalone mode
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_ADVISORS);
+      const advisors: any[] = raw ? JSON.parse(raw) : [];
+      return [
+        DEFAULT_ADMIN_USER,
+        ...advisors.map((a) => ({
+          id: a.id,
+          name: a.name,
+          email: a.email,
+          role: a.role || 'advisor',
+          created_at: a.created_at,
+        })),
+      ];
+    } catch {
+      return [DEFAULT_ADMIN_USER];
+    }
+  },
+
+  // Admin: Create a new advisor
+  async createAdvisor(name: string, email: string, pass: string): Promise<{ success: boolean; user?: User; error?: string }> {
+    const online = await checkServerAvailability();
+    if (online) {
+      try {
+        const token = localStorage.getItem('formflow_token');
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (token) headers['Authorization'] = `Bearer ${token}`;
+        const res = await fetch('/api/admin/users', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ name, email, password: pass, role: 'advisor' }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          return { success: true, user: data.user };
+        }
+        return { success: false, error: data.error };
+      } catch {}
+    }
+
+    // Standalone fallback
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!name.trim()) return { success: false, error: 'El nombre es obligatorio' };
+    if (!validateEmail(normalizedEmail)) return { success: false, error: 'Correo electrónico no válido' };
+    const passValidation = validatePassword(pass);
+    if (!passValidation.isValid) return { success: false, error: passValidation.error };
+
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY_ADVISORS);
+      const advisors: any[] = raw ? JSON.parse(raw) : [];
+      if (advisors.some((a) => a.email.toLowerCase() === normalizedEmail) || normalizedEmail === DEFAULT_ADMIN_USER.email) {
+        return { success: false, error: 'Ya existe un usuario con este correo electrónico' };
+      }
+
+      const newAdvisor = {
+        id: `usr-adv-${Date.now()}`,
+        name: name.trim(),
+        email: normalizedEmail,
+        role: 'advisor' as const,
+        created_at: new Date().toISOString(),
+        storedPass: pass,
+      };
+
+      advisors.unshift(newAdvisor);
+      localStorage.setItem(STORAGE_KEY_ADVISORS, JSON.stringify(advisors));
+
+      return {
+        success: true,
+        user: {
+          id: newAdvisor.id,
+          name: newAdvisor.name,
+          email: newAdvisor.email,
+          role: newAdvisor.role,
+          created_at: newAdvisor.created_at,
+        },
+      };
+    } catch {
+      return { success: false, error: 'Error al registrar asesor localmente' };
+    }
   },
 };

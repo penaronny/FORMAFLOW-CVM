@@ -23,6 +23,7 @@ export function initDatabase() {
       name TEXT NOT NULL,
       email TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'advisor',
       created_at TEXT NOT NULL
     );
 
@@ -73,10 +74,14 @@ export function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_answers_response_id ON answers(response_id);
   `);
 
+  try {
+    db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'advisor';");
+  } catch {}
+
   seedDemoData();
 }
 
-function hashPassword(password: string): string {
+export function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16).toString('hex');
   const derivedKey = crypto.scryptSync(password, salt, 64);
   return `${salt}:${derivedKey.toString('hex')}`;
@@ -94,17 +99,30 @@ export function verifyPassword(password: string, storedHash: string): boolean {
 }
 
 function seedDemoData() {
-  const visaUserCheck = db.prepare('SELECT id FROM users WHERE email = ?').get('demo@asesoresvisa.com');
   const now = new Date().toISOString();
-  const passwordHash = hashPassword('Password123!');
 
-  if (!visaUserCheck) {
+  // 1. Seed Main Admin User: law@ronnypena.com.do / Escafowne1.
+  const adminEmail = 'law@ronnypena.com.do';
+  const adminPasswordHash = hashPassword('Escafowne1.');
+  const adminCheck = db.prepare('SELECT id FROM users WHERE email = ?').get(adminEmail) as { id: string } | undefined;
+
+  let adminId = 'usr-admin-ronny';
+  if (!adminCheck) {
     db.prepare(`
-      INSERT INTO users (id, name, email, password_hash, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run('usr-asesor-001', 'Asesor Principal (Asesores Visa)', 'demo@asesoresvisa.com', passwordHash, now);
+      INSERT INTO users (id, name, email, password_hash, role, created_at)
+      VALUES (?, ?, ?, ?, 'admin', ?)
+    `).run(adminId, 'Ronny Peña (Director Legal)', adminEmail, adminPasswordHash, now);
+  } else {
+    adminId = adminCheck.id;
+    // Ensure password and role are updated
+    db.prepare('UPDATE users SET password_hash = ?, role = ? WHERE id = ?').run(adminPasswordHash, 'admin', adminId);
+  }
 
-    // Form: Solicitud de Visa Americana B1/B2
+  // Ensure Form 1 is attached to Ronny Peña
+  const formCheck = db.prepare('SELECT id FROM forms WHERE slug = ?').get('solicitud-visa-b1b2');
+  if (formCheck) {
+    db.prepare('UPDATE forms SET user_id = ? WHERE slug = ?').run(adminId, 'solicitud-visa-b1b2');
+  } else {
     const formVisaId = 'frm-visa-001';
     const formVisaSlug = 'solicitud-visa-b1b2';
     db.prepare(`
@@ -112,7 +130,7 @@ function seedDemoData() {
       VALUES (?, ?, ?, ?, ?, 1, ?, ?)
     `).run(
       formVisaId,
-      'usr-asesor-001',
+      adminId,
       'Solicitud de Visa Americana B1/B2 (Asesores Visa)',
       'Completa tus datos personales y de viaje para preparar tu cita y formulario consular DS-160.',
       formVisaSlug,
@@ -165,7 +183,8 @@ function seedDemoData() {
     INSERT INTO users (id, name, email, password_hash, created_at)
     VALUES (?, ?, ?, ?, ?)
   `);
-  insertUser.run(userId, 'Carlos Mendoza (RRHH)', 'demo@empresa.com', passwordHash, now);
+  const demoPasswordHash = hashPassword('Password123!');
+  insertUser.run(userId, 'Carlos Mendoza (RRHH)', 'demo@empresa.com', demoPasswordHash, now);
 
   // Form 1: Clima Laboral
   const form1Id = 'frm-clima-001';
