@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Field, Form, FormResponseRecord } from '../types/form';
+import { Field, Form, FormResponseRecord } from '../types/form.js';
+import { DataService } from '../services/dataService.js';
+import { buildClientFormLink } from '../utils/formEncoding.js';
 import { 
   ArrowLeft, 
   Search, 
@@ -44,11 +46,7 @@ export const ResponsesView: React.FC<ResponsesViewProps> = ({ formId, onNavigate
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch(`/api/forms/${formId}/responses`);
-      if (!res.ok) {
-        throw new Error('No se pudieron obtener las respuestas de este formulario');
-      }
-      const data = await res.json();
+      const data = await DataService.getResponses(formId);
       setForm(data.form);
       setFields(data.fields || []);
       setResponses(data.responses || []);
@@ -65,8 +63,11 @@ export const ResponsesView: React.FC<ResponsesViewProps> = ({ formId, onNavigate
 
   const handleCopyLink = () => {
     if (!form?.slug) return;
-    const fullUrl = `${window.location.origin}/#f/${form.slug}`;
-    navigator.clipboard.writeText(fullUrl).then(() => {
+    const { directLink } = buildClientFormLink(window.location.origin, {
+      ...form,
+      fields,
+    });
+    navigator.clipboard.writeText(directLink).then(() => {
       setCopiedLink(true);
       setTimeout(() => setCopiedLink(false), 2500);
     });

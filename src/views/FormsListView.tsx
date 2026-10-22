@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Form } from '../types/form';
+import { Form } from '../types/form.js';
+import { DataService, getAgencyConfig, saveAgencyConfig, AgencyConfig } from '../services/dataService.js';
+import { buildClientFormLink, buildWhatsAppShareMessage } from '../utils/formEncoding.js';
 import { 
   PlusCircle, 
   Search, 
@@ -15,7 +17,12 @@ import {
   Inbox, 
   AlertTriangle,
   RefreshCw,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Share2,
+  Phone,
+  Settings,
+  X,
+  Sparkles
 } from 'lucide-react';
 
 interface FormsListViewProps {
@@ -31,28 +38,31 @@ export const FormsListView: React.FC<FormsListViewProps> = ({ onNavigate }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'inactive'>('all');
   
-  // Copy link feedback
+  // Copy feedback
   const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   // Deletion modal
   const [formToDelete, setFormToDelete] = useState<Form | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
-
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   // Toggle active state in progress
   const [togglingId, setTogglingId] = useState<string | null>(null);
 
+  // Share Modal for Client Link
+  const [shareModalForm, setShareModalForm] = useState<Form | null>(null);
+
+  // Settings Modal (WhatsApp number)
+  const [showSettings, setShowSettings] = useState(false);
+  const [agencyConfig, setAgencyConfig] = useState<AgencyConfig>(getAgencyConfig());
+
   const fetchForms = async () => {
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch('/api/forms');
-      if (!res.ok) {
-        throw new Error('Error al cargar formularios');
-      }
-      const data = await res.json();
-      setForms(data.forms || []);
+      const data = await DataService.getForms();
+      setForms(data || []);
     } catch (err: any) {
       setError(err.message || 'No se pudieron obtener los formularios');
     } finally {
@@ -64,10 +74,16 @@ export const FormsListView: React.FC<FormsListViewProps> = ({ onNavigate }) => {
     fetchForms();
   }, []);
 
-  const handleCopyLink = (slug: string) => {
-    const fullUrl = `${window.location.origin}/#f/${slug}`;
-    navigator.clipboard.writeText(fullUrl).then(() => {
-      setCopiedSlug(slug);
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const handleCopyClientLink = (form: Form) => {
+    const { directLink } = buildClientFormLink(window.location.origin, form);
+    navigator.clipboard.writeText(directLink).then(() => {
+      setCopiedSlug(form.slug);
+      showToast('¡Enlace de cliente copiado! Puedes enviárselo por WhatsApp o correo.');
       setTimeout(() => setCopiedSlug(null), 2500);
     });
   };
@@ -75,15 +91,11 @@ export const FormsListView: React.FC<FormsListViewProps> = ({ onNavigate }) => {
   const handleToggleActive = async (form: Form) => {
     try {
       setTogglingId(form.id);
-      const res = await fetch(`/api/forms/${form.id}/toggle-active`, {
-        method: 'PATCH',
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setForms((prev) =>
-          prev.map((f) => (f.id === form.id ? { ...f, is_active: data.is_active } : f))
-        );
-      }
+      const newActive = await DataService.toggleActive(form.id);
+      setForms((prev) =>
+        prev.map((f) => (f.id === form.id ? { ...f, is_active: newActive } : f))
+      );
+      showToast(newActive ? 'Formulario activado' : 'Formulario pausado');
     } catch (err) {
       console.error('Error toggling status:', err);
     } finally {
@@ -96,21 +108,22 @@ export const FormsListView: React.FC<FormsListViewProps> = ({ onNavigate }) => {
     try {
       setIsDeleting(true);
       setDeleteError(null);
-      const res = await fetch(`/api/forms/${formToDelete.id}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        setForms((prev) => prev.filter((f) => f.id !== formToDelete.id));
-        setFormToDelete(null);
-      } else {
-        setDeleteError('No fue posible eliminar el formulario. Intenta nuevamente.');
-      }
+      await DataService.deleteForm(formToDelete.id);
+      setForms((prev) => prev.filter((f) => f.id !== formToDelete.id));
+      setFormToDelete(null);
+      showToast('Formulario eliminado con éxito');
     } catch (err) {
       console.error('Error deleting form:', err);
-      setDeleteError('Error de red al intentar eliminar.');
+      setDeleteError('No fue posible eliminar el formulario.');
     } finally {
       setIsDeleting(false);
     }
+  };
+
+  const handleSaveSettings = () => {
+    saveAgencyConfig(agencyConfig);
+    setShowSettings(false);
+    showToast('Configuración guardada exitosamente');
   };
 
   // Filtered list
@@ -134,23 +147,43 @@ export const FormsListView: React.FC<FormsListViewProps> = ({ onNavigate }) => {
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      {/* Toast notification */}
+      {toastMessage && (
+        <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-xl flex items-center gap-2 text-xs font-semibold border border-slate-700 animate-in fade-in slide-in-from-bottom-3">
+          <Check className="w-4 h-4 text-emerald-400" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
       {/* Top Section */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Mis Formularios</h1>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Mis Formularios de Clientes</h1>
           <p className="text-sm text-slate-500 mt-1">
-            Crea, administra y consulta las respuestas de los formularios de tu organización.
+            Crea formularios para visas y trámites, y compártelos con tus clientes para que los llenen sin registrarse.
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => onNavigate('new-form')}
-          className="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm px-4 py-2.5 rounded-xl shadow-md shadow-blue-500/20 transition-all hover:shadow-lg hover:shadow-blue-500/30"
-        >
-          <PlusCircle className="w-5 h-5" />
-          <span>Nuevo Formulario</span>
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowSettings(true)}
+            title="Configurar WhatsApp y datos de Asesores Visa"
+            className="inline-flex items-center gap-1.5 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-semibold text-xs px-3.5 py-2.5 rounded-xl shadow-xs transition-colors"
+          >
+            <Settings className="w-4 h-4 text-slate-500" />
+            <span className="hidden sm:inline">Ajustes WhatsApp</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onNavigate('new-form')}
+            className="inline-flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm px-4 py-2.5 rounded-xl shadow-md shadow-blue-500/20 transition-all hover:shadow-lg hover:shadow-blue-500/30"
+          >
+            <PlusCircle className="w-5 h-5" />
+            <span>Nuevo Formulario</span>
+          </button>
+        </div>
       </div>
 
       {/* Summary KPI Cards */}
@@ -177,7 +210,7 @@ export const FormsListView: React.FC<FormsListViewProps> = ({ onNavigate }) => {
 
         <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-xs">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Total Respuestas</span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Respuestas de Clientes</span>
             <div className="p-2 rounded-xl bg-indigo-50 text-indigo-600">
               <Inbox className="w-5 h-5" />
             </div>
@@ -279,7 +312,7 @@ export const FormsListView: React.FC<FormsListViewProps> = ({ onNavigate }) => {
           <p className="text-sm text-slate-500 max-w-md mx-auto mt-1 mb-6">
             {searchTerm || statusFilter !== 'all'
               ? 'Prueba modificando tus términos de búsqueda o cambiando el filtro de estado.'
-              : 'Comienza a recopilar información interna creando tu primer formulario dinámico.'}
+              : 'Comienza creando tu primer formulario para que tus clientes puedan completarlo desde cualquier dispositivo.'}
           </p>
           <button
             type="button"
@@ -299,10 +332,13 @@ export const FormsListView: React.FC<FormsListViewProps> = ({ onNavigate }) => {
               year: 'numeric',
             });
 
+            const { directLink } = buildClientFormLink(window.location.origin, form);
+            const waShareUrl = `https://wa.me/?text=${buildWhatsAppShareMessage(form, directLink, agencyConfig.name)}`;
+
             return (
               <div
                 key={form.id}
-                className="bg-white rounded-2xl border border-slate-200/90 hover:border-slate-300 shadow-xs hover:shadow-md transition-all flex flex-col justify-between overflow-hidden"
+                className="bg-white rounded-3xl border border-slate-200/90 hover:border-slate-300 shadow-xs hover:shadow-md transition-all flex flex-col justify-between overflow-hidden"
               >
                 {/* Card Top */}
                 <div className="p-6">
@@ -319,7 +355,7 @@ export const FormsListView: React.FC<FormsListViewProps> = ({ onNavigate }) => {
                           form.is_active ? 'bg-emerald-500' : 'bg-amber-500'
                         }`}
                       />
-                      {form.is_active ? 'Activo' : 'Inactivo'}
+                      {form.is_active ? 'Activo para Clientes' : 'Pausado'}
                     </span>
 
                     <button
@@ -345,7 +381,23 @@ export const FormsListView: React.FC<FormsListViewProps> = ({ onNavigate }) => {
                     {form.description || 'Sin descripción'}
                   </p>
 
-                  <div className="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+                  {/* Share with clients CTA button */}
+                  <div className="mt-4 p-3 bg-blue-50/70 rounded-2xl border border-blue-100 flex items-center justify-between gap-2">
+                    <div>
+                      <p className="text-[11px] font-bold text-blue-900">Enlace para Clientes</p>
+                      <p className="text-[10px] text-blue-700">Sin necesidad de iniciar sesión</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShareModalForm(form)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-colors shrink-0"
+                    >
+                      <Share2 className="w-3.5 h-3.5" />
+                      <span>Compartir</span>
+                    </button>
+                  </div>
+
+                  <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
                     <span className="flex items-center gap-1.5">
                       <Calendar className="w-3.5 h-3.5 text-slate-400" />
                       {formattedDate}
@@ -354,7 +406,7 @@ export const FormsListView: React.FC<FormsListViewProps> = ({ onNavigate }) => {
                     <button
                       type="button"
                       onClick={() => onNavigate('responses', form.id)}
-                      className="inline-flex items-center gap-1 font-semibold text-blue-600 hover:text-blue-700 bg-blue-50/70 hover:bg-blue-100/70 px-2 py-0.5 rounded-md transition-colors"
+                      className="inline-flex items-center gap-1 font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100/70 px-2 py-0.5 rounded-md transition-colors"
                     >
                       <MessageSquare className="w-3.5 h-3.5" />
                       <span>{form.response_count || 0} respuestas</span>
@@ -364,12 +416,12 @@ export const FormsListView: React.FC<FormsListViewProps> = ({ onNavigate }) => {
 
                 {/* Card Bottom / Actions */}
                 <div className="bg-slate-50/80 px-6 py-3 border-t border-slate-100 flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1.5">
                     <button
                       type="button"
-                      onClick={() => handleCopyLink(form.slug)}
-                      title="Copiar enlace único para compartir"
-                      className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 transition-colors shadow-2xs"
+                      onClick={() => handleCopyClientLink(form)}
+                      title="Copiar enlace universal para clientes"
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-xl bg-white border border-slate-200 text-slate-700 hover:bg-slate-100 transition-colors shadow-2xs"
                     >
                       {copiedSlug === form.slug ? (
                         <>
@@ -385,13 +437,23 @@ export const FormsListView: React.FC<FormsListViewProps> = ({ onNavigate }) => {
                     </button>
 
                     <a
-                      href={`/#f/${form.slug}`}
+                      href={directLink}
                       target="_blank"
                       rel="noopener noreferrer"
-                      title="Abrir formulario público"
-                      className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                      title="Probar formulario como cliente"
+                      className="p-1.5 rounded-xl bg-white border border-slate-200 text-slate-600 hover:text-blue-600 hover:bg-blue-50 transition-colors"
                     >
                       <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+
+                    <a
+                      href={waShareUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Enviar a cliente por WhatsApp"
+                      className="p-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 hover:bg-emerald-100 transition-colors"
+                    >
+                      <Phone className="w-3.5 h-3.5" />
                     </a>
                   </div>
 
@@ -400,7 +462,7 @@ export const FormsListView: React.FC<FormsListViewProps> = ({ onNavigate }) => {
                       type="button"
                       onClick={() => onNavigate('editor', form.id)}
                       title="Editar formulario"
-                      className="p-1.5 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition-colors"
+                      className="p-1.5 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-200/60 transition-colors"
                     >
                       <Edit3 className="w-4 h-4" />
                     </button>
@@ -409,7 +471,7 @@ export const FormsListView: React.FC<FormsListViewProps> = ({ onNavigate }) => {
                       type="button"
                       onClick={() => setFormToDelete(form)}
                       title="Eliminar formulario"
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                      className="p-1.5 rounded-xl text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -418,6 +480,167 @@ export const FormsListView: React.FC<FormsListViewProps> = ({ onNavigate }) => {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Share with Client Modal */}
+      {shareModalForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl border border-slate-200">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center">
+                  <Share2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">Enlace para Clientes</h3>
+                  <p className="text-xs text-slate-500">Cualquier persona puede llenarlo sin registrarse</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShareModalForm(null)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="my-5 space-y-4">
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1">
+                  Enlace Universal Directo (Recomendado)
+                </label>
+                <p className="text-[11px] text-slate-500 mb-2">
+                  Funciona en cualquier celular o navegador sin depender de bases de datos externas:
+                </p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    readOnly
+                    value={buildClientFormLink(window.location.origin, shareModalForm).directLink}
+                    className="flex-1 text-xs px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-mono text-slate-700 select-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleCopyClientLink(shareModalForm)}
+                    className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold shrink-0 flex items-center gap-1.5 shadow-sm"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copiar</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Share directly via WhatsApp */}
+              <div className="p-4 bg-emerald-50/70 border border-emerald-200 rounded-2xl">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h4 className="text-xs font-bold text-emerald-950 flex items-center gap-1.5">
+                      <Phone className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>Enviar directamente por WhatsApp</span>
+                    </h4>
+                    <p className="text-[11px] text-emerald-700 mt-0.5">
+                      Abre un chat con el mensaje pre-redactado listo para enviar a tu cliente.
+                    </p>
+                  </div>
+                  <a
+                    href={`https://wa.me/?text=${buildWhatsAppShareMessage(
+                      shareModalForm,
+                      buildClientFormLink(window.location.origin, shareModalForm).directLink,
+                      agencyConfig.name
+                    )}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold shrink-0 transition-colors shadow-xs"
+                  >
+                    Abrir WhatsApp
+                  </a>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                type="button"
+                onClick={() => setShareModalForm(null)}
+                className="px-4 py-2 bg-slate-800 text-white text-xs font-semibold rounded-xl hover:bg-slate-900 transition-colors"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Agency Settings Modal */}
+      {showSettings && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 sm:p-8 shadow-2xl border border-slate-200">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-slate-100 text-slate-700 flex items-center justify-center">
+                  <Settings className="w-4 h-4" />
+                </div>
+                <h3 className="text-base font-bold text-slate-900">Ajustes de Asesores Visa</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSettings(false)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="my-5 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  Nombre de la Empresa o Asesoría
+                </label>
+                <input
+                  type="text"
+                  value={agencyConfig.name}
+                  onChange={(e) => setAgencyConfig({ ...agencyConfig, name: e.target.value })}
+                  placeholder="Ej. Asesores Visa"
+                  className="w-full text-sm px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  WhatsApp para recibir formularios completados (Opcional)
+                </label>
+                <input
+                  type="text"
+                  value={agencyConfig.phone}
+                  onChange={(e) => setAgencyConfig({ ...agencyConfig, phone: e.target.value })}
+                  placeholder="Ej. +573001234567 o +13051234567"
+                  className="w-full text-sm px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                />
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Incluye el código de país. Cuando tus clientes completen un formulario, podrán enviarte todas sus respuestas directamente a este número con un solo clic.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowSettings(false)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveSettings}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl shadow-xs"
+              >
+                Guardar Ajustes
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

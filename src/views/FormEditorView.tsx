@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Field, FieldType, Form } from '../types/form';
+import { Field, FieldType, Form } from '../types/form.js';
+import { DataService, getAgencyConfig } from '../services/dataService.js';
+import { buildClientFormLink, buildWhatsAppShareMessage } from '../utils/formEncoding.js';
 import { 
   ArrowLeft, 
   Save, 
@@ -19,7 +21,9 @@ import {
   ListFilter, 
   Eye, 
   PenTool,
-  AlertCircle
+  AlertCircle,
+  Share2,
+  Phone
 } from 'lucide-react';
 
 interface FormEditorViewProps {
@@ -38,35 +42,35 @@ const FIELD_TEMPLATES: Array<{
   {
     type: 'text',
     title: 'Texto Corto',
-    desc: 'Nombres, cargos, líneas breves',
+    desc: 'Nombres, pasaportes, datos breves',
     icon: Type,
     defaultLabel: 'Texto de una línea',
   },
   {
     type: 'textarea',
     title: 'Texto Largo',
-    desc: 'Comentarios, sugerencias, descripciones',
+    desc: 'Motivo de viaje, antecedentes, comentarios',
     icon: AlignLeft,
-    defaultLabel: 'Comentarios detallados',
+    defaultLabel: 'Explicación detallada',
   },
   {
     type: 'email',
     title: 'Correo Electrónico',
-    desc: 'Validación automática de email',
+    desc: 'Validación de email del cliente',
     icon: Mail,
     defaultLabel: 'Correo Electrónico',
   },
   {
     type: 'number',
     title: 'Número',
-    desc: 'Cantidades, edades, puntuaciones',
+    desc: 'Edad, ingresos, cantidades',
     icon: Hash,
     defaultLabel: 'Valor numérico',
   },
   {
     type: 'date',
     title: 'Fecha',
-    desc: 'Selección de día, mes y año',
+    desc: 'Fecha de nacimiento, fecha de viaje',
     icon: Calendar,
     defaultLabel: 'Fecha requerida',
   },
@@ -103,13 +107,9 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
     if (formId) {
       setLoading(true);
       setLoadError(null);
-      fetch(`/api/forms/${formId}`)
-        .then((res) => {
-          if (!res.ok) throw new Error('Formulario no encontrado');
-          return res.json();
-        })
-        .then((data) => {
-          const f: Form = data.form;
+      DataService.getFormById(formId)
+        .then((f) => {
+          if (!f) throw new Error('Formulario no encontrado');
           setTitle(f.title);
           setDescription(f.description || '');
           setFields(f.fields || []);
@@ -122,14 +122,14 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
         })
         .finally(() => setLoading(false));
     } else {
-      // Default starting state for a new form
-      setTitle('Nuevo Formulario de Recolección');
-      setDescription('Completa la información solicitada a continuación.');
+      // Default starting state for a new visa form
+      setTitle('Solicitud de Información Consular para Clientes');
+      setDescription('Por favor completa todos los campos requeridos para que Asesores Visa tramite tu solicitud de forma ágil y segura.');
       setFields([
         {
           id: `fld-${Date.now()}-1`,
           form_id: '',
-          label: 'Nombre Completo',
+          label: 'Nombre y Apellidos completos (según Pasaporte)',
           type: 'text',
           is_required: true,
           position: 0,
@@ -137,10 +137,18 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
         {
           id: `fld-${Date.now()}-2`,
           form_id: '',
+          label: 'Número de Pasaporte',
+          type: 'text',
+          is_required: true,
+          position: 1,
+        },
+        {
+          id: `fld-${Date.now()}-3`,
+          form_id: '',
           label: 'Correo Electrónico',
           type: 'email',
           is_required: true,
-          position: 1,
+          position: 2,
         },
       ]);
     }
@@ -229,7 +237,7 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
 
     setSaving(true);
     try {
-      const payload = {
+      const payload: Partial<Form> = {
         title: title.trim(),
         description: description.trim(),
         fields: fields.map((f, idx) => ({
@@ -239,41 +247,45 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
         is_active: isActive,
       };
 
-      const url = formId ? `/api/forms/${formId}` : '/api/forms';
-      const method = formId ? 'PUT' : 'POST';
-
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        setValidationErrors([data.error || 'Error al guardar el formulario']);
+      const result = await DataService.saveForm(formId, payload);
+      if (!result.success) {
+        setValidationErrors([result.error || 'Error al guardar el formulario']);
         return;
       }
 
-      if (data.slug) {
-        setSlug(data.slug);
+      if (result.slug) {
+        setSlug(result.slug);
       }
 
       setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 4000);
-      if (!formId && data.formId) {
-        onNavigate('editor', data.formId);
+      setTimeout(() => setSaveSuccess(false), 4500);
+
+      if (!formId && result.formId) {
+        onNavigate('editor', result.formId);
       }
     } catch {
-      setValidationErrors(['Error de conexión con el servidor al guardar']);
+      setValidationErrors(['Error al guardar el formulario']);
     } finally {
       setSaving(false);
     }
   };
 
-  const handleCopyLink = () => {
-    if (!slug) return;
-    const fullUrl = `${window.location.origin}/#f/${slug}`;
-    navigator.clipboard.writeText(fullUrl).then(() => {
+  // Build current client link
+  const currentFormObj: Form = {
+    id: formId || 'temp',
+    user_id: '',
+    title: title.trim(),
+    description: description.trim(),
+    slug: slug || 'formulario',
+    is_active: isActive,
+    created_at: '',
+    updated_at: '',
+    fields,
+  };
+  const { directLink } = buildClientFormLink(window.location.origin, currentFormObj);
+
+  const handleCopyClientLink = () => {
+    navigator.clipboard.writeText(directLink).then(() => {
       setCopiedLink(true);
       setTimeout(() => setCopiedLink(false), 2500);
     });
@@ -283,7 +295,7 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
     return (
       <div className="py-24 text-center">
         <div className="w-8 h-8 border-3 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-        <p className="text-sm text-slate-500">Cargando formulario para edición...</p>
+        <p className="text-sm text-slate-500">Cargando formulario...</p>
       </div>
     );
   }
@@ -316,30 +328,31 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
               <>
                 <button
                   type="button"
-                  onClick={handleCopyLink}
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
+                  onClick={handleCopyClientLink}
+                  title="Copiar enlace universal para clientes (no requiere registro)"
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 transition-colors shadow-2xs"
                 >
                   {copiedLink ? (
                     <>
                       <Check className="w-4 h-4 text-emerald-600" />
-                      <span className="text-emerald-700">Enlace Copiado</span>
+                      <span className="text-emerald-700">¡Enlace Copiado!</span>
                     </>
                   ) : (
                     <>
-                      <Copy className="w-4 h-4 text-slate-500" />
-                      <span>Copiar Enlace</span>
+                      <Copy className="w-4 h-4 text-blue-600" />
+                      <span>Copiar Enlace para Clientes</span>
                     </>
                   )}
                 </button>
 
                 <a
-                  href={`/#f/${slug}`}
+                  href={directLink}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
                 >
                   <ExternalLink className="w-4 h-4 text-slate-500" />
-                  <span>Ver Formulario Público</span>
+                  <span>Ver Formulario</span>
                 </a>
               </>
             )}
@@ -347,7 +360,7 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
             <button
               type="button"
               onClick={() => setPreviewMode(!previewMode)}
-              className={`inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-lg transition-colors border ${
+              className={`inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl transition-colors border ${
                 previewMode
                   ? 'bg-blue-50 text-blue-700 border-blue-200'
                   : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
@@ -361,7 +374,7 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
               type="button"
               onClick={handleSave}
               disabled={saving}
-              className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs px-4 py-2 rounded-lg shadow-sm transition-colors disabled:opacity-50"
+              className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-xs px-4 py-2.5 rounded-xl shadow-sm transition-colors disabled:opacity-50"
             >
               {saving ? (
                 <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
@@ -377,9 +390,21 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
       {/* Save Success feedback banner */}
       {saveSuccess && (
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-4">
-          <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 text-emerald-800 text-xs flex items-center gap-2">
-            <Check className="w-4 h-4 text-emerald-600" />
-            <span className="font-semibold">¡Formulario guardado exitosamente! El enlace único ya está listo para ser compartido.</span>
+          <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4 text-emerald-800 text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+            <div className="flex items-center gap-2">
+              <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span className="font-semibold">
+                ¡Formulario guardado exitosamente! El enlace para tus clientes está listo.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleCopyClientLink}
+              className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-semibold inline-flex items-center gap-1 shrink-0"
+            >
+              <Copy className="w-3.5 h-3.5" />
+              <span>Copiar Enlace para Clientes</span>
+            </button>
           </div>
         </div>
       )}
@@ -388,7 +413,7 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
       {loadError && (
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-4">
           <div className="bg-red-50 border border-red-200 rounded-2xl p-4 text-red-700 text-xs flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-red-600" />
+            <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
             <span>{loadError}</span>
           </div>
         </div>
@@ -399,7 +424,7 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-4">
           <div className="bg-red-50 border border-red-200 rounded-2xl p-4 text-red-700 text-xs">
             <div className="flex items-center gap-2 font-bold mb-1">
-              <AlertCircle className="w-4 h-4" />
+              <AlertCircle className="w-4 h-4 shrink-0" />
               <span>Por favor corrige los siguientes requisitos antes de guardar:</span>
             </div>
             <ul className="list-disc pl-5 space-y-1">
@@ -418,7 +443,7 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
           <div className="max-w-2xl mx-auto bg-white rounded-3xl shadow-md border border-slate-200 p-8">
             <div className="border-b border-slate-100 pb-6 mb-6">
               <span className="text-xs font-bold uppercase tracking-wider text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full">
-                Vista Previa del Respondente
+                Vista Previa del Cliente (Sin Login)
               </span>
               <h2 className="text-2xl font-extrabold text-slate-900 mt-3">{title || 'Sin Título'}</h2>
               <p className="text-sm text-slate-500 mt-2 whitespace-pre-line">{description || 'Sin descripción'}</p>
@@ -450,7 +475,7 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                     <input
                       type="email"
                       disabled
-                      placeholder="ejemplo@empresa.com"
+                      placeholder="ejemplo@cliente.com"
                       className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl"
                     />
                   )}
@@ -500,13 +525,13 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
           /* Editor Layout: Left Palette + Center Canvas */
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
             {/* Left Sidebar Palette */}
-            <div className="lg:col-span-4 bg-white rounded-2xl p-5 border border-slate-200/90 shadow-xs sticky top-36">
+            <div className="lg:col-span-4 bg-white rounded-3xl p-6 border border-slate-200/90 shadow-xs sticky top-36">
               <h3 className="font-bold text-slate-900 text-sm tracking-tight flex items-center justify-between">
                 <span>Agregar Campo</span>
                 <span className="text-[11px] font-medium text-slate-400">Clic para añadir</span>
               </h3>
               <p className="text-xs text-slate-500 mt-1 mb-4">
-                Selecciona los elementos de recolección necesarios para tu formulario:
+                Selecciona las preguntas necesarias para el trámite de visa:
               </p>
 
               <div className="grid grid-cols-1 gap-2.5">
@@ -542,7 +567,7 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                   <div>
                     <p className="text-xs font-bold text-slate-800">Estado de Publicación</p>
                     <p className="text-[11px] text-slate-500">
-                      {isActive ? 'Aceptando respuestas' : 'Respuestas deshabilitadas'}
+                      {isActive ? 'Abierto para clientes' : 'Pausado (no recibe respuestas)'}
                     </p>
                   </div>
                   <button
@@ -565,7 +590,7 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
             {/* Center Canvas */}
             <div className="lg:col-span-8 space-y-6">
               {/* Form Metadata Card */}
-              <div className="bg-white rounded-2xl p-6 border border-slate-200/90 shadow-xs space-y-4">
+              <div className="bg-white rounded-3xl p-6 border border-slate-200/90 shadow-xs space-y-4">
                 <div>
                   <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1" htmlFor="form-title">
                     Título del Formulario <span className="text-red-500">*</span>
@@ -575,21 +600,21 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                     type="text"
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
-                    placeholder="Ej. Solicitud de Vacaciones y Permisos"
+                    placeholder="Ej. Solicitud de Visa Americana B1/B2"
                     className="w-full text-lg font-bold text-slate-900 px-3.5 py-2 bg-slate-50/50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
                   />
                 </div>
 
                 <div>
                   <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1" htmlFor="form-desc">
-                    Instrucciones o Descripción
+                    Instrucciones para el Cliente
                   </label>
                   <textarea
                     id="form-desc"
                     rows={2}
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
-                    placeholder="Describe el propósito del formulario y quién debe completarlo..."
+                    placeholder="Instrucciones que leerá el cliente al abrir el formulario..."
                     className="w-full text-sm text-slate-700 px-3.5 py-2 bg-slate-50/50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
                   />
                 </div>
@@ -599,18 +624,18 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
                   <h3 className="font-bold text-slate-800 text-sm">
-                    Campos del Formulario ({fields.length})
+                    Preguntas del Formulario ({fields.length})
                   </h3>
                   <span className="text-xs text-slate-500">
-                    Arrastra o usa las flechas para reordenar
+                    Usa las flechas para reordenar las preguntas
                   </span>
                 </div>
 
                 {fields.length === 0 ? (
-                  <div className="bg-white rounded-2xl border-2 border-dashed border-slate-300 p-8 text-center">
-                    <p className="text-sm font-semibold text-slate-700">Sin campos aún</p>
+                  <div className="bg-white rounded-3xl border-2 border-dashed border-slate-300 p-8 text-center">
+                    <p className="text-sm font-semibold text-slate-700">Sin preguntas aún</p>
                     <p className="text-xs text-slate-500 mt-1">
-                      Haz clic en cualquiera de los tipos del panel izquierdo para añadir tu primer campo.
+                      Haz clic en cualquiera de los tipos del panel izquierdo para añadir tu primera pregunta.
                     </p>
                   </div>
                 ) : (
@@ -621,7 +646,7 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                     return (
                       <div
                         key={field.id || idx}
-                        className="bg-white rounded-2xl border border-slate-200 p-5 shadow-xs hover:border-slate-300 transition-colors"
+                        className="bg-white rounded-3xl border border-slate-200 p-6 shadow-xs hover:border-slate-300 transition-colors"
                       >
                         {/* Field Header */}
                         <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-100">
@@ -674,14 +699,14 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                         <div className="grid grid-cols-1 sm:grid-cols-12 gap-4 items-center">
                           <div className="sm:col-span-8">
                             <label className="block text-xs font-medium text-slate-600 mb-1" htmlFor={`field-label-${idx}`}>
-                              Etiqueta o Pregunta del Campo
+                              Pregunta o Dato a Solicitar
                             </label>
                             <input
                               id={`field-label-${idx}`}
                               type="text"
                               value={field.label}
                               onChange={(e) => updateField(idx, { label: e.target.value })}
-                              placeholder="Ej. Nombre del solicitante"
+                              placeholder="Ej. Número de Pasaporte"
                               className="w-full text-sm font-medium text-slate-900 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
                             />
                           </div>
@@ -694,14 +719,14 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                                 onChange={(e) => updateField(idx, { is_required: e.target.checked })}
                                 className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500 cursor-pointer"
                               />
-                              <span className="text-xs font-semibold text-slate-700">Campo Obligatorio</span>
+                              <span className="text-xs font-semibold text-slate-700">Obligatorio</span>
                             </label>
                           </div>
                         </div>
 
                         {/* Select Options Manager */}
                         {field.type === 'select' && (
-                          <div className="mt-4 pt-4 border-t border-slate-100 bg-slate-50/70 p-4 rounded-xl">
+                          <div className="mt-4 pt-4 border-t border-slate-100 bg-slate-50/70 p-4 rounded-2xl">
                             <label className="block text-xs font-bold text-slate-700 mb-2">
                               Opciones del menú desplegable:
                             </label>
@@ -710,7 +735,7 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                               {(field.options || []).map((opt, optIdx) => (
                                 <div key={optIdx} className="flex items-center gap-2">
                                   <div className="w-2 h-2 rounded-full bg-slate-300 shrink-0" />
-                                  <span className="text-xs font-medium text-slate-800 bg-white border border-slate-200 px-3 py-1.5 rounded-lg flex-1">
+                                  <span className="text-xs font-medium text-slate-800 bg-white border border-slate-200 px-3 py-1.5 rounded-xl flex-1">
                                     {opt}
                                   </span>
                                   <button
@@ -742,13 +767,13 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                                     handleAddOption(idx, field.id);
                                   }
                                 }}
-                                placeholder="Escribe una nueva opción y pulsa Añadir..."
-                                className="flex-1 text-xs px-3 py-1.5 bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                placeholder="Escribe una opción y pulsa Añadir..."
+                                className="flex-1 text-xs px-3 py-2 bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500"
                               />
                               <button
                                 type="button"
                                 onClick={() => handleAddOption(idx, field.id)}
-                                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-lg transition-colors"
+                                className="px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-xl transition-colors"
                               >
                                 Añadir Opción
                               </button>

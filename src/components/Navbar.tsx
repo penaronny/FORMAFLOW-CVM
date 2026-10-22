@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { FileSpreadsheet, PlusCircle, LogOut, User, Menu, X, ShieldCheck } from 'lucide-react';
+import { PlusCircle, LogOut, Menu, X, ShieldCheck, Plane } from 'lucide-react';
 
 interface NavbarProps {
   currentView: string;
@@ -18,16 +18,16 @@ export const Navbar: React.FC<NavbarProps> = ({ currentView, onNavigate }) => {
           {/* Logo and Brand */}
           <div className="flex items-center space-x-3 cursor-pointer" onClick={() => onNavigate('forms')}>
             <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center text-white shadow-md shadow-blue-500/20">
-              <FileSpreadsheet className="w-5 h-5" />
+              <Plane className="w-5 h-5 transform -rotate-45" />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="font-bold text-lg tracking-tight text-white">FormFlow</span>
+                <span className="font-bold text-lg tracking-tight text-white">Asesores Visa</span>
                 <span className="text-[10px] font-semibold bg-blue-500/20 text-blue-300 border border-blue-500/30 px-1.5 py-0.5 rounded">
-                  EMPRESA
+                  PORTAL
                 </span>
               </div>
-              <p className="text-xs text-slate-400 hidden sm:block">Gestión Centralizada de Formularios</p>
+              <p className="text-xs text-slate-400 hidden sm:block">Formularios y Trámites Consulares</p>
             </div>
           </div>
 
@@ -88,7 +88,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentView, onNavigate }) => {
                 onClick={() => onNavigate('login')}
                 className="text-sm font-medium text-slate-300 hover:text-white px-3 py-2 rounded-lg"
               >
-                Acceso Empleados
+                Acceso Asesores
               </button>
             </div>
           )}

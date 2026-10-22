@@ -1,14 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { Field, Form } from '../types/form';
+import { Field, Form } from '../types/form.js';
+import { DataService, getAgencyConfig } from '../services/dataService.js';
+import { decodeFormFromUrlData, formatAnswersForWhatsApp } from '../utils/formEncoding.js';
 import { 
-  FileSpreadsheet, 
   CheckCircle, 
   AlertCircle, 
   Send, 
   Clock, 
   RotateCcw,
   ShieldCheck,
-  Ban
+  Ban,
+  Phone,
+  Download,
+  Plane
 } from 'lucide-react';
 
 interface PublicFormViewProps {
@@ -27,28 +31,70 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
   const [submittedSuccessfully, setSubmittedSuccessfully] = useState(false);
   const [submittedAt, setSubmittedAt] = useState<string | null>(null);
 
+  const agencyConfig = getAgencyConfig();
+
   useEffect(() => {
     setLoading(true);
     setError(null);
+
+    // 1. Check if form data is directly embedded in URL (?d=...)
+    const fullHash = window.location.hash;
+    const fullSearch = window.location.search;
+    let encodedData: string | null = null;
+
+    if (fullHash.includes('d=')) {
+      const match = fullHash.match(/d=([A-Za-z0-9_-]+)/);
+      if (match) encodedData = match[1];
+    } else if (fullSearch.includes('d=')) {
+      const params = new URLSearchParams(fullSearch);
+      encodedData = params.get('d');
+    }
+
+    if (encodedData) {
+      const decoded = decodeFormFromUrlData(encodedData);
+      if (decoded) {
+        setForm(decoded);
+        const initialAnswers: Record<string, string> = {};
+        (decoded.fields || []).forEach((f) => {
+          initialAnswers[f.id] = '';
+        });
+        setAnswers(initialAnswers);
+        setLoading(false);
+        return;
+      }
+    }
+
+    // 2. Fetch via API or Local Database
     fetch(`/api/public/forms/${slug}`)
       .then(async (res) => {
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(data.error || 'Formulario no encontrado o URL inválida');
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          return res.json();
         }
-        return res.json();
+        throw new Error('Not found on server');
       })
       .then((data) => {
         setForm(data.form);
-        // Pre-fill answer keys
         const initialAnswers: Record<string, string> = {};
         (data.form.fields || []).forEach((f: Field) => {
           initialAnswers[f.id] = '';
         });
         setAnswers(initialAnswers);
       })
-      .catch((err) => {
-        setError(err.message || 'Error al cargar el formulario');
+      .catch(async () => {
+        // Fallback to local forms
+        const allForms = await DataService.getForms();
+        const matched = allForms.find((f) => f.slug === slug);
+        if (matched) {
+          setForm(matched);
+          const initialAnswers: Record<string, string> = {};
+          (matched.fields || []).forEach((f) => {
+            initialAnswers[f.id] = '';
+          });
+          setAnswers(initialAnswers);
+        } else {
+          setError('Formulario no encontrado o el enlace ha caducado.');
+        }
       })
       .finally(() => setLoading(false));
   }, [slug]);
@@ -95,7 +141,6 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
 
     if (Object.keys(localErrors).length > 0) {
       setFieldErrors(localErrors);
-      // Scroll to first error
       const firstErrorField = document.getElementById(`field-input-${Object.keys(localErrors)[0]}`);
       if (firstErrorField) {
         firstErrorField.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -107,26 +152,15 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
     setFieldErrors({});
 
     try {
-      const res = await fetch(`/api/public/forms/${slug}/submit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ answers }),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        if (data.fieldErrors) {
-          setFieldErrors(data.fieldErrors);
-        } else {
-          setGeneralError(data.error || 'Ocurrió un error al enviar el formulario');
-        }
-        return;
+      const result = await DataService.submitPublicForm(slug, answers, form);
+      if (result.success) {
+        setSubmittedSuccessfully(true);
+        setSubmittedAt(result.submittedAt || new Date().toISOString());
+      } else {
+        setGeneralError('No se pudo guardar la respuesta. Intenta de nuevo.');
       }
-
-      setSubmittedSuccessfully(true);
-      setSubmittedAt(data.submittedAt || new Date().toISOString());
     } catch {
-      setGeneralError('Error de conexión con el servidor. Por favor intenta de nuevo.');
+      setGeneralError('Error al enviar la respuesta.');
     } finally {
       setSubmitting(false);
     }
@@ -140,6 +174,31 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
     setAnswers(initialAnswers);
     setFieldErrors({});
     setSubmittedSuccessfully(false);
+  };
+
+  const handleDownloadReceipt = () => {
+    if (!form) return;
+    let content = `COMPROBANTE DE ENVÍO - ${agencyConfig.name.toUpperCase()}\n`;
+    content += `Formulario: ${form.title}\n`;
+    content += `Fecha de Registro: ${new Date(submittedAt || Date.now()).toLocaleString('es-ES')}\n`;
+    content += `--------------------------------------------------\n\n`;
+
+    (form.fields || []).forEach((f, i) => {
+      content += `${i + 1}. ${f.label}\n`;
+      content += `Respuesta: ${answers[f.id] || '(Sin respuesta)'}\n\n`;
+    });
+
+    content += `--------------------------------------------------\n`;
+    content += `Este documento es un comprobante de que sus respuestas han sido procesadas.\n`;
+
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Comprobante_${form.slug}_${Date.now()}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   if (loading) {
@@ -162,7 +221,7 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
           </div>
           <h2 className="text-xl font-bold text-slate-900">Formulario no encontrado</h2>
           <p className="text-sm text-slate-500 mt-2 mb-6">
-            El enlace que abriste no existe o ha expirado. Por favor verifica la URL compartida.
+            El enlace que abriste no existe o ha expirado. Por favor verifica el enlace compartido por tu asesor.
           </p>
           <a
             href="/"
@@ -185,11 +244,11 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
           </div>
           <h2 className="text-xl font-bold text-slate-900">Este formulario no está disponible</h2>
           <p className="text-sm text-slate-600 mt-2">
-            El creador de <strong>"{form.title}"</strong> ha pausado la recepción de respuestas en este momento.
+            El equipo de <strong>{agencyConfig.name}</strong> ha pausado la recepción de respuestas en este momento.
           </p>
           <div className="mt-6 pt-6 border-t border-slate-100 flex items-center justify-center gap-1.5 text-xs text-slate-400">
             <Clock className="w-4 h-4" />
-            <span>Ponte en contacto con el administrador para más información</span>
+            <span>Ponte en contacto con tu asesor para más información</span>
           </div>
         </div>
       </div>
@@ -198,6 +257,8 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
 
   // Submitted Successfully State
   if (submittedSuccessfully) {
+    const waUrl = formatAnswersForWhatsApp(form, answers, agencyConfig.phone);
+
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
         <div className="max-w-lg w-full bg-white rounded-3xl p-8 sm:p-10 border border-slate-200/90 shadow-2xl text-center">
@@ -210,8 +271,7 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
           </h2>
 
           <p className="text-sm text-slate-600 mt-3 leading-relaxed">
-            Hemos registrado tus datos exitosamente en la base de datos centralizada de{' '}
-            <strong className="text-slate-800">{form.title}</strong>.
+            Hemos registrado tus datos exitosamente para <strong className="text-slate-800">{agencyConfig.name}</strong>.
           </p>
 
           {submittedAt && (
@@ -221,11 +281,40 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
             </div>
           )}
 
-          <div className="mt-8 pt-6 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-center gap-3">
+          {/* WhatsApp Direct Forwarding Box */}
+          <div className="mt-6 p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-left">
+            <h3 className="text-xs font-bold text-emerald-950 flex items-center gap-1.5">
+              <Phone className="w-4 h-4 text-emerald-600" />
+              <span>¿Deseas enviar tus respuestas directamente por WhatsApp?</span>
+            </h3>
+            <p className="text-[11px] text-emerald-700 mt-1">
+              Envía un resumen de tus respuestas al WhatsApp de {agencyConfig.name} para agilizar tu trámite.
+            </p>
+            <a
+              href={waUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-3 w-full inline-flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-2.5 px-4 rounded-xl shadow-sm transition-colors"
+            >
+              <Phone className="w-4 h-4" />
+              <span>Enviar Resumen a Asesores Visa por WhatsApp</span>
+            </a>
+          </div>
+
+          <div className="mt-6 pt-6 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={handleDownloadReceipt}
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-semibold text-xs transition-colors shadow-2xs"
+            >
+              <Download className="w-4 h-4 text-slate-500" />
+              <span>Descargar Comprobante</span>
+            </button>
+
             <button
               type="button"
               onClick={handleReset}
-              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200/80 text-slate-700 font-semibold text-xs transition-colors"
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200/80 text-slate-700 font-semibold text-xs transition-colors"
             >
               <RotateCcw className="w-4 h-4" />
               <span>Enviar otra respuesta</span>
@@ -242,22 +331,25 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
       <div className="max-w-2xl mx-auto">
         {/* Company Branding Banner */}
         <div className="flex items-center justify-between mb-4 px-2">
-          <div className="flex items-center gap-2 text-slate-500">
-            <div className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center shadow-xs">
-              <FileSpreadsheet className="w-4 h-4" />
+          <div className="flex items-center gap-2 text-slate-600">
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center shadow-xs">
+              <Plane className="w-4 h-4 transform -rotate-45" />
             </div>
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-700">FormFlow Empresa</span>
+            <div>
+              <span className="text-xs font-bold tracking-tight text-slate-900 block leading-tight">{agencyConfig.name}</span>
+              <span className="text-[10px] text-slate-400 block">Formulario Oficial para Clientes</span>
+            </div>
           </div>
 
-          <div className="flex items-center gap-1 text-[11px] text-slate-400">
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
-            <span>Formulario Oficial Interno</span>
+          <div className="flex items-center gap-1 text-[11px] text-slate-500 bg-white border border-slate-200 px-2.5 py-1 rounded-full shadow-2xs">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+            <span>Sin Registro Requerido</span>
           </div>
         </div>
 
         {/* Main Form Box */}
         <div className="bg-white rounded-3xl shadow-xl border border-slate-200/90 overflow-hidden">
-          {/* Form Header Accent Bar */}
+          {/* Accent Bar */}
           <div className="h-2.5 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500" />
 
           <div className="p-6 sm:p-10">
@@ -332,7 +424,7 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
                         type="email"
                         value={value}
                         onChange={(e) => handleInputChange(field.id, e.target.value)}
-                        placeholder="nombre@empresa.com"
+                        placeholder="ejemplo@correo.com"
                         className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
                       />
                     )}
@@ -412,7 +504,7 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
 
         {/* Confidentiality Footer */}
         <div className="text-center mt-6 text-xs text-slate-400">
-          <p>Tus respuestas se almacenan de forma segura en los servidores de la empresa.</p>
+          <p>Tus respuestas se recopilan de manera confidencial para {agencyConfig.name}.</p>
         </div>
       </div>
     </div>

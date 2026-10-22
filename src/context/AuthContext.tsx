@@ -1,10 +1,12 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { User } from '../types/form.js';
+import { DataService } from '../services/dataService.js';
 
 interface AuthContextType {
   user: User | null;
   token: string | null;
   isLoading: boolean;
+  isServerOnline: boolean;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   register: (name: string, email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   loginAsDemo: () => Promise<void>;
@@ -17,24 +19,15 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('formflow_token'));
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isServerOnline, setIsServerOnline] = useState<boolean>(true);
 
   useEffect(() => {
     async function checkAuth() {
       try {
-        const storedToken = localStorage.getItem('formflow_token');
-        const headers: Record<string, string> = {};
-        if (storedToken) {
-          headers['Authorization'] = `Bearer ${storedToken}`;
-        }
-        const res = await fetch('/api/auth/me', { headers });
-        if (res.ok) {
-          const data = await res.json();
-          setUser(data.user);
-        } else {
-          setUser(null);
-          localStorage.removeItem('formflow_token');
-          setToken(null);
-        }
+        const online = await DataService.isServerOnline();
+        setIsServerOnline(online);
+        const currentUser = await DataService.getCurrentUser();
+        setUser(currentUser);
       } catch (err) {
         console.error('Failed to verify session:', err);
         setUser(null);
@@ -47,62 +40,47 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const login = async (email: string, password: string) => {
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        return { success: false, error: data.error || 'Error al iniciar sesión' };
+      const res = await DataService.login(email, password);
+      if (res.success && res.user) {
+        setUser(res.user);
+        return { success: true };
       }
-      setUser(data.user);
-      setToken(data.token);
-      localStorage.setItem('formflow_token', data.token);
-      return { success: true };
+      return { success: false, error: res.error || 'Credenciales inválidas' };
     } catch {
-      return { success: false, error: 'Error de conexión con el servidor' };
+      return { success: false, error: 'Error al procesar el inicio de sesión' };
     }
   };
 
   const register = async (name: string, email: string, password: string) => {
     try {
-      const res = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, password }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        return { success: false, error: data.error || 'Error al registrar usuario' };
+      const res = await DataService.register(name, email, password);
+      if (res.success && res.user) {
+        setUser(res.user);
+        return { success: true };
       }
-      setUser(data.user);
-      setToken(data.token);
-      localStorage.setItem('formflow_token', data.token);
-      return { success: true };
+      return { success: false, error: res.error || 'Error al registrar usuario' };
     } catch {
-      return { success: false, error: 'Error de conexión con el servidor' };
+      return { success: false, error: 'Error al procesar el registro' };
     }
   };
 
   const loginAsDemo = async () => {
-    await login('demo@empresa.com', 'Password123!');
+    await login('demo@asesoresvisa.com', 'Password123!');
   };
 
   const logout = async () => {
     try {
-      await fetch('/api/auth/logout', { method: 'POST' });
-    } catch {
-      // ignore
+      await DataService.logout();
     } finally {
       setUser(null);
       setToken(null);
-      localStorage.removeItem('formflow_token');
     }
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, isLoading, login, register, loginAsDemo, logout }}>
+    <AuthContext.Provider
+      value={{ user, token, isLoading, isServerOnline, login, register, loginAsDemo, logout }}
+    >
       {children}
     </AuthContext.Provider>
   );

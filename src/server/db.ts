@@ -94,12 +94,72 @@ export function verifyPassword(password: string, storedHash: string): boolean {
 }
 
 function seedDemoData() {
+  const visaUserCheck = db.prepare('SELECT id FROM users WHERE email = ?').get('demo@asesoresvisa.com');
+  const now = new Date().toISOString();
+  const passwordHash = hashPassword('Password123!');
+
+  if (!visaUserCheck) {
+    db.prepare(`
+      INSERT INTO users (id, name, email, password_hash, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run('usr-asesor-001', 'Asesor Principal (Asesores Visa)', 'demo@asesoresvisa.com', passwordHash, now);
+
+    // Form: Solicitud de Visa Americana B1/B2
+    const formVisaId = 'frm-visa-001';
+    const formVisaSlug = 'solicitud-visa-b1b2';
+    db.prepare(`
+      INSERT INTO forms (id, user_id, title, description, slug, is_active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+    `).run(
+      formVisaId,
+      'usr-asesor-001',
+      'Solicitud de Visa Americana B1/B2 (Asesores Visa)',
+      'Completa tus datos personales y de viaje para preparar tu cita y formulario consular DS-160.',
+      formVisaSlug,
+      now,
+      now
+    );
+
+    const visaFields = [
+      { id: 'fv-1', label: 'Nombre y Apellidos completos según Pasaporte', type: 'text', is_required: 1, options: '[]', position: 0 },
+      { id: 'fv-2', label: 'Número de Pasaporte', type: 'text', is_required: 1, options: '[]', position: 1 },
+      { id: 'fv-3', label: 'Correo Electrónico de Contacto', type: 'email', is_required: 1, options: '[]', position: 2 },
+      { id: 'fv-4', label: 'Número de WhatsApp', type: 'text', is_required: 1, options: '[]', position: 3 },
+      { id: 'fv-5', label: 'Tipo de Trámite', type: 'select', is_required: 1, options: JSON.stringify(['Primera Vez (Entrevista Consular)', 'Renovación de Visa', 'Trámite Urgente']), position: 4 },
+      { id: 'fv-6', label: 'Fecha estimada de viaje a EE.UU.', type: 'date', is_required: 0, options: '[]', position: 5 },
+      { id: 'fv-7', label: 'Comentarios o dudas adicionales', type: 'textarea', is_required: 0, options: '[]', position: 6 },
+    ];
+
+    const insertField = db.prepare(`
+      INSERT INTO fields (id, form_id, label, type, is_required, options, position)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const f of visaFields) {
+      insertField.run(f.id, formVisaId, f.label, f.type, f.is_required, f.options, f.position);
+    }
+
+    // Pre-seed 1 client response
+    const respId = 'resp-visa-client-1';
+    db.prepare('INSERT INTO responses (id, form_id, submitted_at) VALUES (?, ?, ?)').run(
+      respId,
+      formVisaId,
+      new Date(Date.now() - 3600000 * 2).toISOString()
+    );
+    const insertAns = db.prepare('INSERT INTO answers (id, response_id, field_id, value) VALUES (?, ?, ?, ?)');
+    insertAns.run('ans-v1', respId, 'fv-1', 'María Camila Morales');
+    insertAns.run('ans-v2', respId, 'fv-2', 'PAS5544332');
+    insertAns.run('ans-v3', respId, 'fv-3', 'camila.morales@gmail.com');
+    insertAns.run('ans-v4', respId, 'fv-4', '+57 312 987 6543');
+    insertAns.run('ans-v5', respId, 'fv-5', 'Primera Vez (Entrevista Consular)');
+    insertAns.run('ans-v6', respId, 'fv-6', '2026-11-20');
+    insertAns.run('ans-v7', respId, 'fv-7', 'Deseo viajar con mi familia para conocer Nueva York.');
+  }
+
   const userCheck = db.prepare('SELECT id FROM users WHERE email = ?').get('demo@empresa.com') as { id: string } | undefined;
   if (userCheck) return; // already seeded
 
   const userId = 'usr-demo-001';
-  const now = new Date().toISOString();
-  const passwordHash = hashPassword('Password123!');
 
   const insertUser = db.prepare(`
     INSERT INTO users (id, name, email, password_hash, created_at)
