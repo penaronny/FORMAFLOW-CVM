@@ -17,9 +17,9 @@ interface AuthViewProps {
 export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
   const { login } = useAuth();
   
-  // Login form state
-  const [email, setEmail] = useState('law@ronnypena.com.do');
-  const [password, setPassword] = useState('Escafowne1.');
+  // Login form state (empty by default - no auto-fill)
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -93,7 +93,8 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
                   required
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="law@ronnypena.com.do"
+                  placeholder="tu-correo@ejemplo.com"
+                  autoComplete="username"
                   className="w-full pl-10 pr-3.5 py-2.5 text-sm bg-slate-50/50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 transition-all font-medium text-slate-900"
                 />
               </div>
@@ -115,7 +116,8 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Contraseña de acceso"
+                  placeholder="••••••••••••"
+                  autoComplete="current-password"
                   className="w-full pl-10 pr-3.5 py-2.5 text-sm bg-slate-50/50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 transition-all font-medium text-slate-900"
                 />
               </div>
