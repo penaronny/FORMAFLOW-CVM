@@ -1,14 +1,58 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { Form, Field, FormResponseRecord } from '../types/form.js';
+import { Form, Field, FormResponseRecord, FieldType } from '../types/form.js';
+
+export function formatAnswerForDisplay(val: string | undefined, type?: FieldType): string {
+  if (!val || val === '[]' || val === '{}') return '—';
+
+  if (type === 'signature' || val.startsWith('data:image/')) {
+    return '[Firma Digital Manuscrita Adjunta]';
+  }
+
+  if (type === 'file' || val.startsWith('data:application/')) {
+    return '[Archivo / Documento Adjunto]';
+  }
+
+  if (type === 'rating') {
+    return `${val} ★`;
+  }
+
+  // Checkbox array
+  if (type === 'checkbox' || val.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(val);
+      if (Array.isArray(parsed)) {
+        return parsed.length > 0 ? parsed.join(', ') : '—';
+      }
+    } catch {}
+  }
+
+  // Matrix JSON
+  if (type === 'matrix_radio' || type === 'matrix_checkbox' || (val.startsWith('{') && val.endsWith('}'))) {
+    try {
+      const parsed = JSON.parse(val);
+      if (typeof parsed === 'object' && parsed !== null) {
+        const parts = Object.entries(parsed).map(([k, v]) => {
+          const formattedVal = Array.isArray(v) ? v.join(', ') : String(v);
+          return `${k}: ${formattedVal}`;
+        });
+        return parts.length > 0 ? parts.join(' | ') : '—';
+      }
+    } catch {}
+  }
+
+  return String(val);
+}
 
 export function exportResponsesToPDF(
   form: Form,
   fields: Field[],
   responses: FormResponseRecord[]
 ) {
+  const visibleFields = fields.filter((f) => f.type !== 'hidden');
+
   const doc = new jsPDF({
-    orientation: fields.length > 4 ? 'landscape' : 'portrait',
+    orientation: visibleFields.length > 4 ? 'landscape' : 'portrait',
     unit: 'pt',
     format: 'a4',
   });
@@ -24,7 +68,7 @@ export function exportResponsesToPDF(
   doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(16);
-  doc.text('ASESORES VISA — REPORTE DE RESPUESTAS', 30, 32);
+  doc.text('ASESORES VISA — REPORTE GENERAL DE RESPUESTAS', 30, 32);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
@@ -51,7 +95,7 @@ export function exportResponsesToPDF(
   doc.text(`Total de registros: ${responses.length}  |  Estado: ${form.is_active ? 'Activo' : 'Inactivo'}  |  Seguridad: Encriptado AES-256`, 30, startTableY);
 
   // Prepare table headers and body
-  const tableHeaders = ['#', 'Fecha', ...fields.map((f) => f.label)];
+  const tableHeaders = ['#', 'Fecha', ...visibleFields.map((f) => f.label)];
   const tableRows = responses.map((r, idx) => {
     const formattedDate = new Date(r.submitted_at).toLocaleDateString('es-ES', {
       day: '2-digit',
@@ -63,7 +107,7 @@ export function exportResponsesToPDF(
     return [
       idx + 1,
       formattedDate,
-      ...fields.map((f) => (r.answers[f.id] !== undefined && r.answers[f.id] !== null ? String(r.answers[f.id]) : '—')),
+      ...visibleFields.map((f) => formatAnswerForDisplay(r.answers[f.id], f.type)),
     ];
   });
 
@@ -111,6 +155,8 @@ export function exportSingleResponseToPDF(
   fields: Field[],
   response: FormResponseRecord
 ) {
+  const visibleFields = fields.filter((f) => f.type !== 'hidden');
+
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'pt',
@@ -146,15 +192,19 @@ export function exportSingleResponseToPDF(
 
   cursorY += 20;
 
+  // Separate text fields from signatures
+  const nonSigFields = visibleFields.filter((f) => f.type !== 'signature');
+  const signatureFields = visibleFields.filter((f) => f.type === 'signature');
+
   // Table of fields
-  const tableData = fields.map((f) => [
+  const tableData = nonSigFields.map((f) => [
     f.label,
-    response.answers[f.id] !== undefined && response.answers[f.id] !== '' ? String(response.answers[f.id]) : '—',
+    formatAnswerForDisplay(response.answers[f.id], f.type),
   ]);
 
   autoTable(doc, {
     startY: cursorY,
-    head: [['Campo / Requisito', 'Información Proporcionada por el Solicitante']],
+    head: [['Campo / Requisito Consular', 'Información Proporcionada']],
     body: tableData,
     theme: 'striped',
     columnStyles: {
@@ -183,6 +233,48 @@ export function exportSingleResponseToPDF(
         { align: 'center' }
       );
     },
+  });
+
+  // Render Signature if captured
+  const lastFinalY = (doc as any).lastAutoTable?.finalY || 400;
+  let sigY = lastFinalY + 25;
+
+  signatureFields.forEach((sigField) => {
+    const sigData = response.answers[sigField.id];
+    if (sigData && sigData.startsWith('data:image/')) {
+      if (sigY + 110 > pageHeight - 50) {
+        doc.addPage();
+        sigY = 60;
+      }
+
+      // Box for signature
+      doc.setDrawColor(203, 213, 225); // slate-300
+      doc.setFillColor(248, 250, 252); // slate-50
+      doc.roundedRect(30, sigY, pageWidth - 60, 95, 8, 8, 'FD');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.setTextColor(30, 41, 59);
+      doc.text(`${sigField.label} (Firma Digital Registrada en Línea):`, 42, sigY + 18);
+
+      try {
+        // Embed signature image
+        doc.addImage(sigData, 'PNG', 45, sigY + 22, 160, 50);
+      } catch (err) {
+        console.error('Error adding signature image to PDF:', err);
+      }
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text(
+        `Firma electrónica verificada y estampada por el solicitante el ${formattedDate}. Expediente Asesores Visa.`,
+        42,
+        sigY + 85
+      );
+
+      sigY += 115;
+    }
   });
 
   const safeId = response.id.replace(/[^a-zA-Z0-9_-]/g, '_');

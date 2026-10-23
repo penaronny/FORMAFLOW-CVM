@@ -60,6 +60,7 @@ const DEFAULT_FORMS: Form[] = [
       { id: 'f-v7', form_id: 'frm-visa-b1b2', label: 'Fecha estimada de viaje', type: 'date', is_required: false, position: 6 },
       { id: 'f-v8', form_id: 'frm-visa-b1b2', label: 'Ocupación o Profesión actual', type: 'text', is_required: true, position: 7 },
       { id: 'f-v9', form_id: 'frm-visa-b1b2', label: 'Información adicional o dudas específicas', type: 'textarea', is_required: false, position: 8 },
+      { id: 'f-v10', form_id: 'frm-visa-b1b2', label: 'Firma Digital del Solicitante', type: 'signature', is_required: true, position: 9 },
     ],
     response_count: 2,
   },

@@ -3,6 +3,7 @@ import { Field, Form, FormResponseRecord } from '../types/form.js';
 import { DataService, getAgencyConfig } from '../services/dataService.js';
 import { decodeFormFromUrlData, formatAnswersForWhatsApp } from '../utils/formEncoding.js';
 import { exportSingleResponseToPDF } from '../utils/pdfExport.js';
+import { SignatureCanvas } from '../components/SignatureCanvas.js';
 import { 
   CheckCircle, 
   AlertCircle, 
@@ -13,7 +14,15 @@ import {
   Ban,
   Phone,
   Download,
-  Plane
+  Plane,
+  Eye,
+  EyeOff,
+  Star,
+  UploadCloud,
+  FileText,
+  X,
+  Lock,
+  Globe
 } from 'lucide-react';
 
 interface PublicFormViewProps {
@@ -31,6 +40,15 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
   const [submitting, setSubmitting] = useState(false);
   const [submittedSuccessfully, setSubmittedSuccessfully] = useState(false);
   const [submittedAt, setSubmittedAt] = useState<string | null>(null);
+
+  // Password visibility map
+  const [showPasswords, setShowPasswords] = useState<Record<string, boolean>>({});
+
+  // File metadata map: fieldId -> { name: string, size: string }
+  const [fileMeta, setFileMeta] = useState<Record<string, { name: string; size: string }>>({});
+
+  // CAPTCHA challenge: fieldId -> { num1: number, num2: number, answer: number }
+  const [captchas, setCaptchas] = useState<Record<string, { num1: number; num2: number; answer: number }>>({});
 
   const agencyConfig = getAgencyConfig();
 
@@ -51,15 +69,38 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
       encodedData = params.get('d');
     }
 
+    const initializeFormState = (loadedForm: Form) => {
+      setForm(loadedForm);
+      const initialAnswers: Record<string, string> = {};
+      const newCaptchas: Record<string, { num1: number; num2: number; answer: number }> = {};
+
+      (loadedForm.fields || []).forEach((f) => {
+        if (f.type === 'hidden') {
+          initialAnswers[f.id] = f.default_value || '';
+        } else if (f.type === 'switch') {
+          initialAnswers[f.id] = 'No';
+        } else if (f.type === 'checkbox') {
+          initialAnswers[f.id] = '[]';
+        } else if (f.type === 'matrix_radio' || f.type === 'matrix_checkbox') {
+          initialAnswers[f.id] = '{}';
+        } else if (f.type === 'captcha') {
+          const n1 = Math.floor(Math.random() * 8) + 2;
+          const n2 = Math.floor(Math.random() * 8) + 2;
+          newCaptchas[f.id] = { num1: n1, num2: n2, answer: n1 + n2 };
+          initialAnswers[f.id] = '';
+        } else {
+          initialAnswers[f.id] = '';
+        }
+      });
+
+      setCaptchas(newCaptchas);
+      setAnswers(initialAnswers);
+    };
+
     if (encodedData) {
       const decoded = decodeFormFromUrlData(encodedData);
       if (decoded) {
-        setForm(decoded);
-        const initialAnswers: Record<string, string> = {};
-        (decoded.fields || []).forEach((f) => {
-          initialAnswers[f.id] = '';
-        });
-        setAnswers(initialAnswers);
+        initializeFormState(decoded);
         setLoading(false);
         return;
       }
@@ -75,24 +116,14 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
         throw new Error('Not found on server');
       })
       .then((data) => {
-        setForm(data.form);
-        const initialAnswers: Record<string, string> = {};
-        (data.form.fields || []).forEach((f: Field) => {
-          initialAnswers[f.id] = '';
-        });
-        setAnswers(initialAnswers);
+        initializeFormState(data.form);
       })
       .catch(async () => {
         // Fallback to local forms
         const allForms = await DataService.getForms();
         const matched = allForms.find((f) => f.slug === slug);
         if (matched) {
-          setForm(matched);
-          const initialAnswers: Record<string, string> = {};
-          (matched.fields || []).forEach((f) => {
-            initialAnswers[f.id] = '';
-          });
-          setAnswers(initialAnswers);
+          initializeFormState(matched);
         } else {
           setError('Formulario no encontrado o el enlace ha caducado.');
         }
@@ -105,7 +136,6 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
   const handleInputChange = (fieldId: string, value: string) => {
     setAnswers((prev) => ({ ...prev, [fieldId]: value }));
     setGeneralError(null);
-    // Clear error for this field as user types
     if (fieldErrors[fieldId]) {
       setFieldErrors((prev) => {
         const copy = { ...prev };
@@ -115,18 +145,117 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
     }
   };
 
+  // Checkbox multi-select handler
+  const handleCheckboxToggle = (fieldId: string, option: string) => {
+    let current: string[] = [];
+    try {
+      current = JSON.parse(answers[fieldId] || '[]');
+      if (!Array.isArray(current)) current = [];
+    } catch {
+      current = [];
+    }
+
+    const exists = current.includes(option);
+    const updated = exists ? current.filter((o) => o !== option) : [...current, option];
+    handleInputChange(fieldId, JSON.stringify(updated));
+  };
+
+  // Matrix Radio handler
+  const handleMatrixRadioChange = (fieldId: string, row: string, col: string) => {
+    let current: Record<string, string> = {};
+    try {
+      current = JSON.parse(answers[fieldId] || '{}');
+      if (typeof current !== 'object') current = {};
+    } catch {
+      current = {};
+    }
+    current[row] = col;
+    handleInputChange(fieldId, JSON.stringify(current));
+  };
+
+  // Matrix Checkbox handler
+  const handleMatrixCheckboxChange = (fieldId: string, row: string, col: string) => {
+    let current: Record<string, string[]> = {};
+    try {
+      current = JSON.parse(answers[fieldId] || '{}');
+      if (typeof current !== 'object') current = {};
+    } catch {
+      current = {};
+    }
+    const rowList = Array.isArray(current[row]) ? [...current[row]] : [];
+    const exists = rowList.includes(col);
+    const updatedRow = exists ? rowList.filter((c) => c !== col) : [...rowList, col];
+    current[row] = updatedRow;
+    handleInputChange(fieldId, JSON.stringify(current));
+  };
+
+  // File Upload handler
+  const handleFileUpload = (fieldId: string, e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      setFieldErrors((prev) => ({ ...prev, [fieldId]: 'El archivo excede el tamaño máximo permitido (5MB)' }));
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      handleInputChange(fieldId, result);
+      setFileMeta((prev) => ({
+        ...prev,
+        [fieldId]: {
+          name: file.name,
+          size: `${(file.size / 1024).toFixed(1)} KB`,
+        },
+      }));
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRemoveFile = (fieldId: string) => {
+    handleInputChange(fieldId, '');
+    setFileMeta((prev) => {
+      const copy = { ...prev };
+      delete copy[fieldId];
+      return copy;
+    });
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form) return;
     setGeneralError(null);
 
-    // Client-side quick check
+    // Comprehensive client-side validation
     const localErrors: Record<string, string> = {};
+
     (form.fields || []).forEach((f) => {
       const val = (answers[f.id] || '').trim();
-      if (f.is_required && !val) {
-        localErrors[f.id] = `El campo "${f.label}" es obligatorio.`;
-      } else if (val) {
+
+      // Required checks
+      if (f.is_required) {
+        if (!val || val === '[]' || val === '{}') {
+          if (f.type === 'signature') {
+            localErrors[f.id] = `Debes firmar en el recuadro digital de "${f.label}".`;
+          } else if (f.type === 'file') {
+            localErrors[f.id] = `Debes adjuntar un archivo para "${f.label}".`;
+          } else if (f.type === 'switch') {
+            if (val !== 'Sí') {
+              localErrors[f.id] = `Debes aceptar la casilla de "${f.label}".`;
+            }
+          } else if (f.type === 'captcha') {
+            localErrors[f.id] = `Debes responder la verificación humana para "${f.label}".`;
+          } else {
+            localErrors[f.id] = `El campo "${f.label}" es obligatorio.`;
+          }
+          return;
+        }
+      }
+
+      // Format validations
+      if (val) {
         if (f.type === 'email') {
           const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
           if (!emailRegex.test(val)) {
@@ -135,6 +264,33 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
         } else if (f.type === 'number') {
           if (isNaN(Number(val))) {
             localErrors[f.id] = 'Ingresa un número válido.';
+          }
+        } else if (f.type === 'phone') {
+          const digits = val.replace(/[^0-9]/g, '');
+          if (digits.length < 7) {
+            localErrors[f.id] = 'Ingresa un número de teléfono válido (mínimo 7 dígitos).';
+          }
+        } else if (f.type === 'url') {
+          try {
+            const urlToTest = val.startsWith('http://') || val.startsWith('https://') ? val : `https://${val}`;
+            new URL(urlToTest);
+          } catch {
+            localErrors[f.id] = 'Ingresa una dirección web o URL válida.';
+          }
+        } else if (f.type === 'captcha') {
+          const c = captchas[f.id];
+          if (c && Number(val) !== c.answer) {
+            localErrors[f.id] = `Respuesta de seguridad incorrecta (${c.num1} + ${c.num2} = ${c.answer}). Intenta de nuevo.`;
+          }
+        } else if (f.type === 'matrix_radio' && f.is_required && f.matrix_rows) {
+          try {
+            const matrixObj = JSON.parse(val);
+            const missingRow = f.matrix_rows.find((r) => !matrixObj[r]);
+            if (missingRow) {
+              localErrors[f.id] = `Por favor selecciona una respuesta para la fila "${missingRow}".`;
+            }
+          } catch {
+            localErrors[f.id] = 'Completa las respuestas de la tabla.';
           }
         }
       }
@@ -170,10 +326,15 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
   const handleReset = () => {
     const initialAnswers: Record<string, string> = {};
     (form?.fields || []).forEach((f) => {
-      initialAnswers[f.id] = '';
+      if (f.type === 'hidden') initialAnswers[f.id] = f.default_value || '';
+      else if (f.type === 'switch') initialAnswers[f.id] = 'No';
+      else if (f.type === 'checkbox') initialAnswers[f.id] = '[]';
+      else if (f.type === 'matrix_radio' || f.type === 'matrix_checkbox') initialAnswers[f.id] = '{}';
+      else initialAnswers[f.id] = '';
     });
     setAnswers(initialAnswers);
     setFieldErrors({});
+    setFileMeta({});
     setSubmittedSuccessfully(false);
   };
 
@@ -193,7 +354,7 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
         <div className="text-center">
           <div className="w-10 h-10 border-3 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-          <p className="text-sm font-semibold text-slate-600">Cargando formulario...</p>
+          <p className="text-sm font-semibold text-slate-600">Cargando formulario seguro...</p>
         </div>
       </div>
     );
@@ -258,7 +419,7 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
           </h2>
 
           <p className="text-sm text-slate-600 mt-3 leading-relaxed">
-            Hemos registrado tus datos exitosamente para <strong className="text-slate-800">{agencyConfig.name}</strong>.
+            Hemos registrado tus datos y firma digital exitosamente para <strong className="text-slate-800">{agencyConfig.name}</strong>.
           </p>
 
           {submittedAt && (
@@ -272,10 +433,10 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
           <div className="mt-6 p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-left">
             <h3 className="text-xs font-bold text-emerald-950 flex items-center gap-1.5">
               <Phone className="w-4 h-4 text-emerald-600" />
-              <span>¿Deseas enviar tus respuestas directamente por WhatsApp?</span>
+              <span>¿Deseas notificar a tu asesor por WhatsApp?</span>
             </h3>
             <p className="text-[11px] text-emerald-700 mt-1">
-              Envía un resumen de tus respuestas al WhatsApp de {agencyConfig.name} para agilizar tu trámite.
+              Envía la confirmación al WhatsApp de {agencyConfig.name} para agilizar tu trámite legal o consular.
             </p>
             <a
               href={waUrl}
@@ -292,16 +453,16 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
             <button
               type="button"
               onClick={handleDownloadReceipt}
-              className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-semibold text-xs transition-colors shadow-2xs"
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-semibold text-xs transition-colors shadow-2xs cursor-pointer"
             >
               <Download className="w-4 h-4 text-slate-500" />
-              <span>Descargar Comprobante</span>
+              <span>Descargar Comprobante PDF</span>
             </button>
 
             <button
               type="button"
               onClick={handleReset}
-              className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200/80 text-slate-700 font-semibold text-xs transition-colors"
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200/80 text-slate-700 font-semibold text-xs transition-colors cursor-pointer"
             >
               <RotateCcw className="w-4 h-4" />
               <span>Enviar otra respuesta</span>
@@ -330,7 +491,7 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
 
           <div className="flex items-center gap-1 text-[11px] text-slate-500 bg-white border border-slate-200 px-2.5 py-1 rounded-full shadow-2xs">
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-            <span>Sin Registro Requerido</span>
+            <span>Encriptación y Sin Registro</span>
           </div>
         </div>
 
@@ -352,7 +513,7 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
 
             <div className="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between text-xs text-slate-400">
               <span>Los campos marcados con <span className="text-red-500 font-bold">*</span> son obligatorios</span>
-              <span>{form.fields?.length || 0} preguntas</span>
+              <span>{form.fields?.filter((f) => f.type !== 'hidden').length || 0} preguntas</span>
             </div>
 
             {/* Questions Container */}
@@ -361,6 +522,11 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
                 const errorMsg = fieldErrors[field.id];
                 const value = answers[field.id] || '';
 
+                // 20. Hidden Field (Invisible to user)
+                if (field.type === 'hidden') {
+                  return <input key={field.id} type="hidden" name={field.id} value={value} />;
+                }
+
                 return (
                   <div
                     key={field.id}
@@ -368,6 +534,8 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
                     className={`p-5 rounded-2xl border transition-all ${
                       errorMsg
                         ? 'bg-red-50/40 border-red-300 ring-2 ring-red-200/60'
+                        : field.type === 'signature'
+                        ? 'bg-indigo-50/20 border-indigo-200 shadow-2xs'
                         : 'bg-white border-slate-200 hover:border-slate-300'
                     }`}
                   >
@@ -382,61 +550,106 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
                       )}
                     </label>
 
-                    {/* Field input based on type */}
+                    {/* 1. Texto Corto */}
                     {field.type === 'text' && (
                       <input
                         id={`input-${field.id}`}
                         type="text"
                         value={value}
                         onChange={(e) => handleInputChange(field.id, e.target.value)}
-                        placeholder="Escribe tu respuesta aquí..."
+                        placeholder={field.placeholder || 'Escribe tu respuesta aquí...'}
                         className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
                       />
                     )}
 
+                    {/* 2. Texto Largo / Párrafo */}
                     {field.type === 'textarea' && (
                       <textarea
                         id={`input-${field.id}`}
                         rows={3}
                         value={value}
                         onChange={(e) => handleInputChange(field.id, e.target.value)}
-                        placeholder="Escribe tu respuesta detallada aquí..."
+                        placeholder={field.placeholder || 'Escribe tu respuesta detallada aquí...'}
                         className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
                       />
                     )}
 
-                    {field.type === 'email' && (
-                      <input
-                        id={`input-${field.id}`}
-                        type="email"
-                        value={value}
-                        onChange={(e) => handleInputChange(field.id, e.target.value)}
-                        placeholder="ejemplo@correo.com"
-                        className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
-                      />
-                    )}
-
+                    {/* 3. Número */}
                     {field.type === 'number' && (
                       <input
                         id={`input-${field.id}`}
                         type="number"
                         value={value}
                         onChange={(e) => handleInputChange(field.id, e.target.value)}
-                        placeholder="Ingresa un número..."
+                        placeholder={field.placeholder || '0'}
                         className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
                       />
                     )}
 
-                    {field.type === 'date' && (
-                      <input
-                        id={`input-${field.id}`}
-                        type="date"
-                        value={value}
-                        onChange={(e) => handleInputChange(field.id, e.target.value)}
-                        className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
-                      />
+                    {/* 4. Radio (Selección única) */}
+                    {field.type === 'radio' && (
+                      <div className="space-y-2 pt-1">
+                        {(field.options || []).map((opt, optIdx) => (
+                          <label
+                            key={optIdx}
+                            className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${
+                              value === opt
+                                ? 'bg-blue-50/70 border-blue-400 text-blue-900 font-medium'
+                                : 'bg-slate-50/50 border-slate-200 hover:bg-slate-100/70 text-slate-700'
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name={`radio-${field.id}`}
+                              value={opt}
+                              checked={value === opt}
+                              onChange={() => handleInputChange(field.id, opt)}
+                              className="w-4 h-4 text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer"
+                            />
+                            <span className="text-xs">{opt}</span>
+                          </label>
+                        ))}
+                      </div>
                     )}
 
+                    {/* 5. Checkbox (Selección múltiple) */}
+                    {field.type === 'checkbox' && (
+                      <div className="space-y-2 pt-1">
+                        {(() => {
+                          let selectedList: string[] = [];
+                          try {
+                            selectedList = JSON.parse(value || '[]');
+                            if (!Array.isArray(selectedList)) selectedList = [];
+                          } catch {
+                            selectedList = [];
+                          }
+
+                          return (field.options || []).map((opt, optIdx) => {
+                            const isChecked = selectedList.includes(opt);
+                            return (
+                              <label
+                                key={optIdx}
+                                className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${
+                                  isChecked
+                                    ? 'bg-blue-50/70 border-blue-400 text-blue-900 font-medium'
+                                    : 'bg-slate-50/50 border-slate-200 hover:bg-slate-100/70 text-slate-700'
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  onChange={() => handleCheckboxToggle(field.id, opt)}
+                                  className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500 cursor-pointer"
+                                />
+                                <span className="text-xs">{opt}</span>
+                              </label>
+                            );
+                          });
+                        })()}
+                      </div>
+                    )}
+
+                    {/* 6. Dropdown / Select */}
                     {field.type === 'select' && (
                       <select
                         id={`input-${field.id}`}
@@ -451,6 +664,327 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
                           </option>
                         ))}
                       </select>
+                    )}
+
+                    {/* 7. Sí / No Switch Toggle */}
+                    {field.type === 'switch' && (
+                      <div className="flex items-center justify-between p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+                        <span className="text-xs font-semibold text-slate-700">
+                          {value === 'Sí' ? 'Confirmado: Sí' : 'No marcado (No)'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleInputChange(field.id, value === 'Sí' ? 'No' : 'Sí')}
+                          className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors cursor-pointer ${
+                            value === 'Sí' ? 'bg-blue-600' : 'bg-slate-300'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-xs transition-transform ${
+                              value === 'Sí' ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    )}
+
+                    {/* 8. Fecha */}
+                    {field.type === 'date' && (
+                      <input
+                        id={`input-${field.id}`}
+                        type="date"
+                        value={value}
+                        onChange={(e) => handleInputChange(field.id, e.target.value)}
+                        className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
+                      />
+                    )}
+
+                    {/* 9. Hora */}
+                    {field.type === 'time' && (
+                      <input
+                        id={`input-${field.id}`}
+                        type="time"
+                        value={value}
+                        onChange={(e) => handleInputChange(field.id, e.target.value)}
+                        className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
+                      />
+                    )}
+
+                    {/* 10. Fecha y Hora */}
+                    {field.type === 'datetime' && (
+                      <input
+                        id={`input-${field.id}`}
+                        type="datetime-local"
+                        value={value}
+                        onChange={(e) => handleInputChange(field.id, e.target.value)}
+                        className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
+                      />
+                    )}
+
+                    {/* 11. Email */}
+                    {field.type === 'email' && (
+                      <input
+                        id={`input-${field.id}`}
+                        type="email"
+                        value={value}
+                        onChange={(e) => handleInputChange(field.id, e.target.value)}
+                        placeholder={field.placeholder || 'ejemplo@correo.com'}
+                        className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
+                      />
+                    )}
+
+                    {/* 12. Phone */}
+                    {field.type === 'phone' && (
+                      <input
+                        id={`input-${field.id}`}
+                        type="tel"
+                        value={value}
+                        onChange={(e) => handleInputChange(field.id, e.target.value)}
+                        placeholder={field.placeholder || '+1 (809) 123-4567'}
+                        className="w-full px-3.5 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
+                      />
+                    )}
+
+                    {/* 13. Password */}
+                    {field.type === 'password' && (
+                      <div className="relative">
+                        <input
+                          id={`input-${field.id}`}
+                          type={showPasswords[field.id] ? 'text' : 'password'}
+                          value={value}
+                          onChange={(e) => handleInputChange(field.id, e.target.value)}
+                          placeholder={field.placeholder || '••••••••'}
+                          className="w-full px-3.5 py-2.5 pr-10 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setShowPasswords((prev) => ({ ...prev, [field.id]: !prev[field.id] }))
+                          }
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                        >
+                          {showPasswords[field.id] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    )}
+
+                    {/* 14. URL */}
+                    {field.type === 'url' && (
+                      <div className="relative">
+                        <Globe className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <input
+                          id={`input-${field.id}`}
+                          type="url"
+                          value={value}
+                          onChange={(e) => handleInputChange(field.id, e.target.value)}
+                          placeholder={field.placeholder || 'https://www.ejemplo.com'}
+                          className="w-full pl-9 pr-3.5 py-2.5 text-sm bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
+                        />
+                      </div>
+                    )}
+
+                    {/* 15. Rating Stars */}
+                    {field.type === 'rating' && (
+                      <div className="space-y-1 pt-1">
+                        <div className="flex items-center gap-2">
+                          {Array.from({ length: field.rating_max || 5 }).map((_, rIdx) => {
+                            const starValue = rIdx + 1;
+                            const isFilled = Number(value) >= starValue;
+
+                            return (
+                              <button
+                                key={rIdx}
+                                type="button"
+                                onClick={() => handleInputChange(field.id, String(starValue))}
+                                className="p-1 hover:scale-110 transition-transform cursor-pointer"
+                              >
+                                <Star
+                                  className={`w-7 h-7 ${
+                                    isFilled
+                                      ? 'text-amber-400 fill-amber-400'
+                                      : 'text-slate-300 hover:text-amber-300'
+                                  }`}
+                                />
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {value && (
+                          <span className="text-xs font-semibold text-slate-600 block">
+                            Puntuación seleccionada: {value} de {field.rating_max || 5}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
+                    {/* 16. Matriz / Cuadrícula de Opción Única */}
+                    {field.type === 'matrix_radio' && (
+                      <div className="overflow-x-auto bg-slate-50/50 p-3 rounded-xl border border-slate-200 mt-2">
+                        {(() => {
+                          let matrixValues: Record<string, string> = {};
+                          try {
+                            matrixValues = JSON.parse(value || '{}');
+                          } catch {
+                            matrixValues = {};
+                          }
+
+                          return (
+                            <table className="w-full text-xs">
+                              <thead>
+                                <tr className="border-b border-slate-200">
+                                  <th className="text-left py-2 px-3 text-slate-500 font-semibold">Aspecto</th>
+                                  {(field.matrix_cols || []).map((col, cIdx) => (
+                                    <th key={cIdx} className="text-center py-2 px-3 text-slate-700 font-bold">{col}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100">
+                                {(field.matrix_rows || []).map((row, rIdx) => (
+                                  <tr key={rIdx} className="hover:bg-blue-50/30">
+                                    <td className="py-2.5 px-3 font-medium text-slate-800">{row}</td>
+                                    {(field.matrix_cols || []).map((col, cIdx) => {
+                                      const isSelected = matrixValues[row] === col;
+                                      return (
+                                        <td key={cIdx} className="text-center py-2.5 px-3">
+                                          <input
+                                            type="radio"
+                                            name={`matrix-radio-${field.id}-${rIdx}`}
+                                            checked={isSelected}
+                                            onChange={() => handleMatrixRadioChange(field.id, row, col)}
+                                            className="w-4 h-4 text-blue-600 focus:ring-blue-500 border-slate-300 cursor-pointer"
+                                          />
+                                        </td>
+                                      );
+                                    })}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          );
+                        })()}
+                      </div>
+                    )}
+
+                    {/* 17. Cuadrícula de Casillas de Verificación */}
+                    {field.type === 'matrix_checkbox' && (
+                      <div className="overflow-x-auto bg-slate-50/50 p-3 rounded-xl border border-slate-200 mt-2">
+                        {(() => {
+                          let matrixValues: Record<string, string[]> = {};
+                          try {
+                            matrixValues = JSON.parse(value || '{}');
+                          } catch {
+                            matrixValues = {};
+                          }
+
+                          return (
+                            <table className="w-full text-xs">
+                              <thead>
+                                <tr className="border-b border-slate-200">
+                                  <th className="text-left py-2 px-3 text-slate-500 font-semibold">Aspecto</th>
+                                  {(field.matrix_cols || []).map((col, cIdx) => (
+                                    <th key={cIdx} className="text-center py-2 px-3 text-slate-700 font-bold">{col}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100">
+                                {(field.matrix_rows || []).map((row, rIdx) => {
+                                  const selectedCols = matrixValues[row] || [];
+                                  return (
+                                    <tr key={rIdx} className="hover:bg-blue-50/30">
+                                      <td className="py-2.5 px-3 font-medium text-slate-800">{row}</td>
+                                      {(field.matrix_cols || []).map((col, cIdx) => {
+                                        const isSelected = selectedCols.includes(col);
+                                        return (
+                                          <td key={cIdx} className="text-center py-2.5 px-3">
+                                            <input
+                                              type="checkbox"
+                                              checked={isSelected}
+                                              onChange={() => handleMatrixCheckboxChange(field.id, row, col)}
+                                              className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500 cursor-pointer"
+                                            />
+                                          </td>
+                                        );
+                                      })}
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          );
+                        })()}
+                      </div>
+                    )}
+
+                    {/* 18. Subir Archivo */}
+                    {field.type === 'file' && (
+                      <div className="space-y-2 pt-1">
+                        {value && fileMeta[field.id] ? (
+                          <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl flex items-center justify-between">
+                            <div className="flex items-center gap-2 text-xs text-blue-900 font-semibold">
+                              <FileText className="w-4 h-4 text-blue-600" />
+                              <span>{fileMeta[field.id].name}</span>
+                              <span className="text-slate-400 font-normal">({fileMeta[field.id].size})</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveFile(field.id)}
+                              className="p-1 text-slate-400 hover:text-red-600 rounded-md hover:bg-white"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+                        ) : (
+                          <label className="p-6 border-2 border-dashed border-slate-300 hover:border-blue-400 rounded-2xl flex flex-col items-center justify-center cursor-pointer bg-slate-50 hover:bg-blue-50/30 transition-colors">
+                            <UploadCloud className="w-7 h-7 text-blue-600 mb-2" />
+                            <span className="text-xs font-bold text-slate-800">Haz clic para adjuntar archivo</span>
+                            <span className="text-[11px] text-slate-400 mt-1">
+                              Formatos permitidos: {field.allowed_file_types || '.pdf, .jpg, .png'} (máx. 5MB)
+                            </span>
+                            <input
+                              type="file"
+                              accept={field.allowed_file_types || '.pdf,.jpg,.jpeg,.png'}
+                              onChange={(e) => handleFileUpload(field.id, e)}
+                              className="hidden"
+                            />
+                          </label>
+                        )}
+                      </div>
+                    )}
+
+                    {/* 19. Firma Digital en Línea */}
+                    {field.type === 'signature' && (
+                      <div className="pt-2">
+                        <SignatureCanvas
+                          value={value}
+                          onChange={(dataUrl) => handleInputChange(field.id, dataUrl)}
+                          label={field.label}
+                        />
+                      </div>
+                    )}
+
+                    {/* 21. CAPTCHA / Verificación de Seguridad */}
+                    {field.type === 'captcha' && (
+                      <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center border border-emerald-200 shrink-0">
+                            <ShieldCheck className="w-5 h-5 text-emerald-600" />
+                          </div>
+                          <div>
+                            <span className="text-xs font-bold text-slate-800 block">Filtro de Seguridad Humana</span>
+                            <span className="text-xs text-slate-500 font-medium">
+                              ¿Cuánto es {captchas[field.id]?.num1 || 7} + {captchas[field.id]?.num2 || 5}?
+                            </span>
+                          </div>
+                        </div>
+
+                        <input
+                          type="number"
+                          value={value}
+                          onChange={(e) => handleInputChange(field.id, e.target.value)}
+                          placeholder="Resultado..."
+                          className="w-28 px-3 py-2 text-xs bg-white border border-slate-300 rounded-xl text-center font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
                     )}
 
                     {/* Error message */}
@@ -475,14 +1009,14 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
                 <button
                   type="submit"
                   disabled={submitting}
-                  className="w-full py-3.5 px-6 bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm rounded-xl shadow-lg shadow-blue-500/20 hover:shadow-xl hover:shadow-blue-500/30 transition-all flex items-center justify-center gap-2 disabled:opacity-60"
+                  className="w-full py-3.5 px-6 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold text-sm rounded-xl shadow-lg shadow-blue-500/20 hover:shadow-xl hover:shadow-blue-500/30 transition-all flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
                 >
                   {submitting ? (
                     <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
                   ) : (
                     <Send className="w-4 h-4" />
                   )}
-                  <span>{submitting ? 'Enviando respuestas...' : 'Enviar Respuestas'}</span>
+                  <span>{submitting ? 'Enviando respuestas...' : 'Enviar Respuestas y Firma'}</span>
                 </button>
               </div>
             </form>
@@ -491,7 +1025,7 @@ export const PublicFormView: React.FC<PublicFormViewProps> = ({ slug }) => {
 
         {/* Confidentiality Footer */}
         <div className="text-center mt-6 text-xs text-slate-400">
-          <p>Tus respuestas se recopilan de manera confidencial para {agencyConfig.name}.</p>
+          <p>Tus respuestas y firma se recopilan de manera confidencial y encriptada para {agencyConfig.name}.</p>
         </div>
       </div>
     </div>

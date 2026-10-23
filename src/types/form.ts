@@ -1,4 +1,31 @@
-export type FieldType = 'text' | 'textarea' | 'email' | 'number' | 'date' | 'select';
+export type FieldType =
+  // 1. Campos de Texto y Entrada Básica
+  | 'text'
+  | 'textarea'
+  | 'number'
+  // 2. Campos de Selección y Opciones
+  | 'radio'
+  | 'checkbox'
+  | 'select'
+  | 'switch'
+  // 3. Campos de Fecha, Hora y Formato Avanzado
+  | 'date'
+  | 'time'
+  | 'datetime'
+  // 4. Campos de Validación Específica
+  | 'email'
+  | 'phone'
+  | 'password'
+  | 'url'
+  // 5. Campos de Calificación y Escalas
+  | 'rating'
+  | 'matrix_radio'
+  | 'matrix_checkbox'
+  // 6. Campos Especiales y de Sistema
+  | 'file'
+  | 'signature'
+  | 'hidden'
+  | 'captcha';
 
 export interface Field {
   id: string;
@@ -6,7 +33,13 @@ export interface Field {
   label: string;
   type: FieldType;
   is_required: boolean;
-  options?: string[]; // for 'select'
+  options?: string[]; // for 'select', 'radio', 'checkbox'
+  matrix_rows?: string[]; // for 'matrix_radio', 'matrix_checkbox'
+  matrix_cols?: string[]; // for 'matrix_radio', 'matrix_checkbox'
+  rating_max?: number; // 5 or 10, default 5
+  placeholder?: string;
+  default_value?: string; // for 'hidden'
+  allowed_file_types?: string; // for 'file'
   position: number;
 }
 

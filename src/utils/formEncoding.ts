@@ -12,6 +12,12 @@ interface CompactForm {
     y: string; // type
     r: number; // is_required 0 or 1
     o?: string[]; // options
+    mr?: string[]; // matrix_rows
+    mc?: string[]; // matrix_cols
+    rm?: number; // rating_max
+    ph?: string; // placeholder
+    dv?: string; // default_value
+    at?: string; // allowed_file_types
   }>;
 }
 
@@ -29,6 +35,12 @@ export function encodeFormToUrlData(form: Form): string {
         y: field.type,
         r: field.is_required ? 1 : 0,
         o: field.options && field.options.length > 0 ? field.options : undefined,
+        mr: field.matrix_rows && field.matrix_rows.length > 0 ? field.matrix_rows : undefined,
+        mc: field.matrix_cols && field.matrix_cols.length > 0 ? field.matrix_cols : undefined,
+        rm: field.rating_max,
+        ph: field.placeholder,
+        dv: field.default_value,
+        at: field.allowed_file_types,
       })),
     };
 
@@ -75,6 +87,12 @@ export function decodeFormFromUrlData(encoded: string): Form | null {
       type: f.y as any,
       is_required: Boolean(f.r),
       options: f.o || [],
+      matrix_rows: f.mr,
+      matrix_cols: f.mc,
+      rating_max: f.rm,
+      placeholder: f.ph,
+      default_value: f.dv,
+      allowed_file_types: f.at,
       position: idx,
     }));
 

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Field, Form, FormResponseRecord } from '../types/form.js';
 import { DataService } from '../services/dataService.js';
 import { buildClientFormLink } from '../utils/formEncoding.js';
-import { exportResponsesToPDF, exportSingleResponseToPDF } from '../utils/pdfExport.js';
+import { exportResponsesToPDF, exportSingleResponseToPDF, formatAnswerForDisplay } from '../utils/pdfExport.js';
 import { 
   ArrowLeft, 
   Search, 
@@ -19,7 +19,9 @@ import {
   AlertCircle,
   Inbox,
   RefreshCw,
-  ShieldCheck
+  ShieldCheck,
+  Star,
+  PenTool
 } from 'lucide-react';
 
 interface ResponsesViewProps {
@@ -373,14 +375,30 @@ export const ResponsesView: React.FC<ResponsesViewProps> = ({ formId, onNavigate
                         </div>
                       </td>
                       {fields.map((field) => {
-                        const val = resp.answers[field.id] || '—';
+                        const val = resp.answers[field.id];
+                        const isSig = field.type === 'signature' || (val && val.startsWith('data:image/'));
+                        const isRating = field.type === 'rating';
+
                         return (
                           <td
                             key={field.id}
                             className="py-3.5 px-4 text-slate-600 max-w-xs truncate"
-                            title={String(val)}
                           >
-                            {val}
+                            {isSig ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 text-[11px] font-semibold border border-indigo-200">
+                                <PenTool className="w-3 h-3 text-indigo-600" />
+                                <span>Firma Digital</span>
+                              </span>
+                            ) : isRating && val ? (
+                              <span className="inline-flex items-center gap-1 text-amber-600 font-bold">
+                                <span>{val}</span>
+                                <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
+                              </span>
+                            ) : (
+                              <span title={formatAnswerForDisplay(val, field.type)}>
+                                {formatAnswerForDisplay(val, field.type)}
+                              </span>
+                            )}
                           </td>
                         );
                       })}
@@ -391,7 +409,7 @@ export const ResponsesView: React.FC<ResponsesViewProps> = ({ formId, onNavigate
                             e.stopPropagation();
                             setSelectedResponse(resp);
                           }}
-                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100/70 px-2.5 py-1 rounded-md transition-colors"
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100/70 px-2.5 py-1 rounded-md transition-colors cursor-pointer"
                         >
                           <Eye className="w-3 h-3" />
                           <span>Ver</span>
@@ -420,7 +438,7 @@ export const ResponsesView: React.FC<ResponsesViewProps> = ({ formId, onNavigate
               <button
                 type="button"
                 onClick={() => setSelectedResponse(null)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -429,14 +447,75 @@ export const ResponsesView: React.FC<ResponsesViewProps> = ({ formId, onNavigate
             <div className="overflow-y-auto py-4 space-y-4 flex-1 pr-1">
               {fields.map((field) => {
                 const answerVal = selectedResponse.answers[field.id];
+                const isSig = field.type === 'signature' || (answerVal && answerVal.startsWith('data:image/'));
+                const isFile = field.type === 'file' && answerVal && answerVal.startsWith('data:');
+                const isRating = field.type === 'rating';
+                const isMatrix = field.type === 'matrix_radio' || field.type === 'matrix_checkbox';
+
                 return (
                   <div key={field.id} className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
                     <span className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1">
                       {field.label}
                     </span>
-                    <p className="text-sm text-slate-900 whitespace-pre-wrap font-medium">
-                      {answerVal !== undefined && answerVal !== '' ? answerVal : <span className="text-slate-400 italic">Sin respuesta</span>}
-                    </p>
+
+                    {/* Signature Preview */}
+                    {isSig ? (
+                      <div className="mt-2 space-y-2">
+                        <div className="bg-white p-3 rounded-2xl border border-indigo-200 shadow-2xs inline-block">
+                          <img src={answerVal} alt="Firma Digital" className="h-24 w-auto max-w-full object-contain" />
+                        </div>
+                        <p className="text-[11px] text-slate-500 flex items-center gap-1 font-medium">
+                          <Check className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Firma digital manuscrita capturada y verificada en línea</span>
+                        </p>
+                      </div>
+                    ) : isFile ? (
+                      <div className="mt-2 flex items-center gap-2">
+                        <a
+                          href={answerVal}
+                          download="archivo_adjunto"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded-xl text-xs font-semibold border border-blue-200 transition-colors"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          <span>Descargar Documento Adjunto</span>
+                        </a>
+                      </div>
+                    ) : isRating && answerVal ? (
+                      <div className="flex items-center gap-1 mt-1">
+                        {Array.from({ length: Number(answerVal) || 0 }).map((_, i) => (
+                          <Star key={i} className="w-5 h-5 fill-amber-400 text-amber-400" />
+                        ))}
+                        <span className="text-xs font-bold text-slate-700 ml-2">({answerVal} de {field.rating_max || 5})</span>
+                      </div>
+                    ) : isMatrix && answerVal ? (
+                      (() => {
+                        try {
+                          const parsed = JSON.parse(answerVal);
+                          return (
+                            <div className="mt-2 space-y-1.5 bg-white p-3 rounded-xl border border-slate-200">
+                              {Object.entries(parsed).map(([k, v], mIdx) => (
+                                <div key={mIdx} className="flex items-center justify-between text-xs py-1 border-b border-slate-50 last:border-none">
+                                  <span className="font-semibold text-slate-700">{k}:</span>
+                                  <span className="text-blue-700 font-bold bg-blue-50 px-2 py-0.5 rounded">
+                                    {Array.isArray(v) ? v.join(', ') : String(v)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        } catch {
+                          return <p className="text-sm text-slate-900 font-medium">{answerVal}</p>;
+                        }
+                      })()
+                    ) : (
+                      <p className="text-sm text-slate-900 whitespace-pre-wrap font-medium">
+                        {answerVal !== undefined && answerVal !== '' ? (
+                          formatAnswerForDisplay(answerVal, field.type)
+                        ) : (
+                          <span className="text-slate-400 italic">Sin respuesta</span>
+                        )}
+                      </p>
+                    )}
                   </div>
                 );
               })}

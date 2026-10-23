@@ -6,6 +6,62 @@ import { validateEmail, validatePassword, generateSlug, validateFormDefinition, 
 import { encryptSensitiveText, decryptSensitiveText } from '../utils/encryption.js';
 import { Field } from '../types/form.js';
 
+function parseFieldRow(f: any): Field {
+  let options: string[] = [];
+  let matrix_rows: string[] | undefined = undefined;
+  let matrix_cols: string[] | undefined = undefined;
+  let rating_max: number | undefined = undefined;
+  let placeholder: string | undefined = undefined;
+  let default_value: string | undefined = undefined;
+  let allowed_file_types: string | undefined = undefined;
+
+  try {
+    const parsed = typeof f.options === 'string' ? JSON.parse(f.options || '[]') : f.options;
+    if (Array.isArray(parsed)) {
+      options = parsed;
+    } else if (parsed && typeof parsed === 'object') {
+      options = Array.isArray(parsed.options) ? parsed.options : [];
+      if (Array.isArray(parsed.matrix_rows)) matrix_rows = parsed.matrix_rows;
+      if (Array.isArray(parsed.matrix_cols)) matrix_cols = parsed.matrix_cols;
+      if (parsed.rating_max) rating_max = Number(parsed.rating_max);
+      if (parsed.placeholder) placeholder = String(parsed.placeholder);
+      if (parsed.default_value) default_value = String(parsed.default_value);
+      if (parsed.allowed_file_types) allowed_file_types = String(parsed.allowed_file_types);
+    }
+  } catch {
+    options = [];
+  }
+
+  return {
+    id: f.id,
+    form_id: f.form_id || '',
+    label: f.label,
+    type: f.type,
+    is_required: Boolean(f.is_required),
+    options,
+    matrix_rows,
+    matrix_cols,
+    rating_max,
+    placeholder,
+    default_value,
+    allowed_file_types,
+    position: Number(f.position) || 0,
+  };
+}
+
+function serializeFieldConfig(f: any): string {
+  const config = {
+    options: Array.isArray(f.options) ? f.options : [],
+    matrix_rows: Array.isArray(f.matrix_rows) ? f.matrix_rows : undefined,
+    matrix_cols: Array.isArray(f.matrix_cols) ? f.matrix_cols : undefined,
+    rating_max: f.rating_max || undefined,
+    placeholder: f.placeholder || undefined,
+    default_value: f.default_value || undefined,
+    allowed_file_types: f.allowed_file_types || undefined,
+  };
+  return JSON.stringify(config);
+}
+
 export const apiRouter = Router();
 
 // ==========================================
@@ -221,11 +277,7 @@ apiRouter.get('/forms/:id', authMiddleware, (req: AuthenticatedRequest, res: Res
       ORDER BY position ASC
     `).all(id) as any[];
 
-    const fields: Field[] = fieldsRaw.map((f) => ({
-      ...f,
-      is_required: Boolean(f.is_required),
-      options: typeof f.options === 'string' ? JSON.parse(f.options || '[]') : f.options || [],
-    }));
+    const fields: Field[] = fieldsRaw.map(parseFieldRow);
 
     return res.json({
       form: {
@@ -269,7 +321,7 @@ apiRouter.post('/forms', authMiddleware, (req: AuthenticatedRequest, res: Respon
 
       fields.forEach((f: any, idx: number) => {
         const fieldId = f.id || `fld-${crypto.randomUUID()}`;
-        const optionsStr = Array.isArray(f.options) ? JSON.stringify(f.options) : '[]';
+        const optionsStr = serializeFieldConfig(f);
         insertField.run(
           fieldId,
           formId,
@@ -337,7 +389,7 @@ apiRouter.put('/forms/:id', authMiddleware, (req: AuthenticatedRequest, res: Res
 
       fields.forEach((f: any, idx: number) => {
         const fieldId = f.id || `fld-${crypto.randomUUID()}`;
-        const optionsStr = Array.isArray(f.options) ? JSON.stringify(f.options) : '[]';
+        const optionsStr = serializeFieldConfig(f);
         insertField.run(
           fieldId,
           id,
@@ -436,11 +488,7 @@ apiRouter.get('/forms/:id/responses', authMiddleware, async (req: AuthenticatedR
       ORDER BY position ASC
     `).all(id) as any[];
 
-    const fields: Field[] = fieldsRaw.map((f) => ({
-      ...f,
-      is_required: Boolean(f.is_required),
-      options: typeof f.options === 'string' ? JSON.parse(f.options || '[]') : f.options || [],
-    }));
+    const fields: Field[] = fieldsRaw.map(parseFieldRow);
 
     // Get responses
     const responses = db.prepare(`
@@ -518,14 +566,7 @@ apiRouter.get('/public/forms/:slug', (req, res) => {
       ORDER BY position ASC
     `).all(form.id) as any[];
 
-    const fields = fieldsRaw.map((f) => ({
-      id: f.id,
-      label: f.label,
-      type: f.type,
-      is_required: Boolean(f.is_required),
-      options: typeof f.options === 'string' ? JSON.parse(f.options || '[]') : f.options || [],
-      position: f.position,
-    }));
+    const fields = fieldsRaw.map(parseFieldRow);
 
     return res.json({
       form: {
@@ -569,11 +610,7 @@ apiRouter.post('/public/forms/:slug/submit', async (req, res) => {
       ORDER BY position ASC
     `).all(form.id) as any[];
 
-    const fields: Field[] = fieldsRaw.map((f) => ({
-      ...f,
-      is_required: Boolean(f.is_required),
-      options: typeof f.options === 'string' ? JSON.parse(f.options || '[]') : f.options || [],
-    }));
+    const fields: Field[] = fieldsRaw.map(parseFieldRow);
 
     const validation = validateFormSubmission(fields, answers);
     if (!validation.isValid) {

@@ -119,9 +119,16 @@ function seedDemoData() {
   }
 
   // Ensure Form 1 is attached to Ronny Peña
-  const formCheck = db.prepare('SELECT id FROM forms WHERE slug = ?').get('solicitud-visa-b1b2');
+  const formCheck = db.prepare('SELECT id FROM forms WHERE slug = ?').get('solicitud-visa-b1b2') as { id: string } | undefined;
   if (formCheck) {
     db.prepare('UPDATE forms SET user_id = ? WHERE slug = ?').run(adminId, 'solicitud-visa-b1b2');
+    const sigCheck = db.prepare('SELECT id FROM fields WHERE form_id = ? AND type = ?').get(formCheck.id, 'signature');
+    if (!sigCheck) {
+      db.prepare(`
+        INSERT INTO fields (id, form_id, label, type, is_required, options, position)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run('fv-8', formCheck.id, 'Firma Digital del Solicitante', 'signature', 1, '{}', 7);
+    }
   } else {
     const formVisaId = 'frm-visa-001';
     const formVisaSlug = 'solicitud-visa-b1b2';
@@ -146,6 +153,7 @@ function seedDemoData() {
       { id: 'fv-5', label: 'Tipo de Trámite', type: 'select', is_required: 1, options: JSON.stringify(['Primera Vez (Entrevista Consular)', 'Renovación de Visa', 'Trámite Urgente']), position: 4 },
       { id: 'fv-6', label: 'Fecha estimada de viaje a EE.UU.', type: 'date', is_required: 0, options: '[]', position: 5 },
       { id: 'fv-7', label: 'Comentarios o dudas adicionales', type: 'textarea', is_required: 0, options: '[]', position: 6 },
+      { id: 'fv-8', label: 'Firma Digital del Solicitante', type: 'signature', is_required: 1, options: '{}', position: 7 },
     ];
 
     const insertField = db.prepare(`
