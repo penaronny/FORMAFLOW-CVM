@@ -3,6 +3,7 @@ import { Field, FieldType, Form } from '../types/form.js';
 import { DataService } from '../services/dataService.js';
 import { buildClientFormLink } from '../utils/formEncoding.js';
 import { SignatureCanvas } from '../components/SignatureCanvas.js';
+import { reorderList, insertItemAt, swapAdjacent } from '../utils/dnd.js';
 import { 
   ArrowLeft, 
   Save, 
@@ -39,7 +40,8 @@ import {
   ShieldCheck,
   Search,
   Sparkles,
-  Layers
+  Layers,
+  GripVertical
 } from 'lucide-react';
 
 interface FormEditorViewProps {
@@ -380,6 +382,15 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
   const [newRowBuffers, setNewRowBuffers] = useState<Record<string, string>>({});
   const [newColBuffers, setNewColBuffers] = useState<Record<string, string>>({});
 
+  // ==========================================
+  // DRAG AND DROP STATE
+  // ==========================================
+  const [draggedFieldIndex, setDraggedFieldIndex] = useState<number | null>(null);
+  const [dragOverFieldIndex, setDragOverFieldIndex] = useState<number | null>(null);
+  const [dragOverPosition, setDragOverPosition] = useState<'above' | 'below' | null>(null);
+  const [isDraggingOverBottom, setIsDraggingOverBottom] = useState(false);
+  const [isDraggingAny, setIsDraggingAny] = useState(false);
+
   useEffect(() => {
     if (formId) {
       setLoading(true);
@@ -451,7 +462,8 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
     }
   }, [formId]);
 
-  const addField = (template: FieldTemplate) => {
+  // Insert helper for Drag & Drop and standard clicks
+  const insertFieldAt = (template: FieldTemplate, targetIndex?: number) => {
     const newField: Field = {
       id: `fld-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       form_id: formId || '',
@@ -465,11 +477,19 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
       placeholder: template.defaultPlaceholder,
       default_value: template.defaultDefaultValue,
       allowed_file_types: template.defaultAllowedFileTypes,
-      position: fields.length,
+      position: targetIndex !== undefined ? targetIndex : fields.length,
     };
-    setFields((prev) => [...prev, newField]);
+
+    setFields((prev) => {
+      const updated = insertItemAt(prev, newField, targetIndex);
+      return updated.map((f, i) => ({ ...f, position: i }));
+    });
     setValidationErrors([]);
     setPickerModalOpen(false);
+  };
+
+  const addField = (template: FieldTemplate) => {
+    insertFieldAt(template);
   };
 
   const removeField = (index: number) => {
@@ -477,14 +497,15 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
   };
 
   const moveField = (index: number, direction: 'up' | 'down') => {
-    const targetIndex = direction === 'up' ? index - 1 : index + 1;
-    if (targetIndex < 0 || targetIndex >= fields.length) return;
-
     setFields((prev) => {
-      const updated = [...prev];
-      const temp = updated[index];
-      updated[index] = updated[targetIndex];
-      updated[targetIndex] = temp;
+      const updated = swapAdjacent(prev, index, direction);
+      return updated.map((f, i) => ({ ...f, position: i }));
+    });
+  };
+
+  const moveFieldToPosition = (fromIndex: number, toIndex: number) => {
+    setFields((prev) => {
+      const updated = reorderList(prev, fromIndex, toIndex);
       return updated.map((f, i) => ({ ...f, position: i }));
     });
   };
@@ -495,6 +516,97 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
       updated[index] = { ...updated[index], ...changes };
       return updated;
     });
+  };
+
+  // ==========================================
+  // DRAG & DROP HANDLERS
+  // ==========================================
+  const handleDragStartTemplate = (e: React.DragEvent, template: FieldTemplate) => {
+    e.dataTransfer.setData('application/json', JSON.stringify({ type: 'template', fieldType: template.type }));
+    e.dataTransfer.effectAllowed = 'copy';
+    setIsDraggingAny(true);
+  };
+
+  const handleDragStartField = (e: React.DragEvent, index: number) => {
+    e.dataTransfer.setData('application/json', JSON.stringify({ type: 'reorder', fromIndex: index }));
+    e.dataTransfer.effectAllowed = 'move';
+    setDraggedFieldIndex(index);
+    setIsDraggingAny(true);
+  };
+
+  const handleDragEnd = () => {
+    setDraggedFieldIndex(null);
+    setDragOverFieldIndex(null);
+    setDragOverPosition(null);
+    setIsDraggingOverBottom(false);
+    setIsDraggingAny(false);
+  };
+
+  const handleFieldDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = draggedFieldIndex !== null ? 'move' : 'copy';
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const offsetY = e.clientY - rect.top;
+    const isAbove = offsetY < rect.height / 2;
+
+    setDragOverFieldIndex(index);
+    setDragOverPosition(isAbove ? 'above' : 'below');
+  };
+
+  const handleFieldDrop = (e: React.DragEvent, targetIndex: number) => {
+    e.preventDefault();
+    try {
+      const dataStr = e.dataTransfer.getData('application/json');
+      if (!dataStr) return;
+      const payload = JSON.parse(dataStr);
+
+      let insertIndex = targetIndex;
+      if (dragOverPosition === 'below') {
+        insertIndex = targetIndex + 1;
+      }
+
+      if (payload.type === 'template') {
+        const template = FIELD_TEMPLATES.find((t) => t.type === payload.fieldType);
+        if (template) {
+          insertFieldAt(template, insertIndex);
+        }
+      } else if (payload.type === 'reorder') {
+        const fromIndex = payload.fromIndex;
+        if (fromIndex !== undefined && fromIndex !== insertIndex) {
+          moveFieldToPosition(fromIndex, insertIndex);
+        }
+      }
+    } catch (err) {
+      console.error('Drop error:', err);
+    } finally {
+      handleDragEnd();
+    }
+  };
+
+  const handleBottomDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    try {
+      const dataStr = e.dataTransfer.getData('application/json');
+      if (!dataStr) return;
+      const payload = JSON.parse(dataStr);
+
+      if (payload.type === 'template') {
+        const template = FIELD_TEMPLATES.find((t) => t.type === payload.fieldType);
+        if (template) {
+          addField(template);
+        }
+      } else if (payload.type === 'reorder') {
+        const fromIndex = payload.fromIndex;
+        if (fromIndex !== undefined) {
+          moveFieldToPosition(fromIndex, fields.length);
+        }
+      }
+    } catch (err) {
+      console.error('Bottom drop error:', err);
+    } finally {
+      handleDragEnd();
+    }
   };
 
   // Option handlers
@@ -1099,9 +1211,9 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
             </div>
           </div>
         ) : (
-          /* Editor Layout: Left Palette + Center Canvas */
+          /* Editor Layout: Left Palette + Center Canvas with Drag & Drop */
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-            {/* Left Sidebar Palette */}
+            {/* Left Sidebar Palette (Draggable Catalog) */}
             <div className="lg:col-span-4 bg-white rounded-3xl p-5 border border-slate-200/90 shadow-xs sticky top-36 max-h-[85vh] flex flex-col">
               <div className="pb-3 border-b border-slate-100 mb-3">
                 <div className="flex items-center justify-between">
@@ -1113,9 +1225,12 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                     20 tipos
                   </span>
                 </div>
-                <p className="text-[11.5px] text-slate-500 mt-1">
-                  Organizados en 6 categorías lógicas. Haz clic en cualquiera para agregarlo:
-                </p>
+                <div className="mt-1.5 p-2 bg-blue-50/70 border border-blue-200/80 rounded-xl text-[11px] text-blue-900 flex items-center gap-1.5 font-medium">
+                  <GripVertical className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                  <span>
+                    <strong>Drag & Drop:</strong> Arrastra cualquier campo al formulario o haz clic para añadirlo.
+                  </span>
+                </div>
 
                 {/* Search Bar */}
                 <div className="relative mt-2.5">
@@ -1169,7 +1284,7 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                 ))}
               </div>
 
-              {/* Template Items Scroll Area */}
+              {/* Template Items Scroll Area (Draggable Elements) */}
               <div className="overflow-y-auto flex-1 pr-1 space-y-4">
                 {CATEGORIES.filter((c) => selectedCategoryTab === 'all' || selectedCategoryTab === c.key).map((category) => {
                   const catTemplates = visibleTemplates.filter((t) => t.category === category.key);
@@ -1193,16 +1308,23 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                           const isSig = tmpl.type === 'signature';
 
                           return (
-                            <button
+                            <div
                               key={tmpl.type}
-                              type="button"
+                              draggable
+                              onDragStart={(e) => handleDragStartTemplate(e, tmpl)}
+                              onDragEnd={handleDragEnd}
                               onClick={() => addField(tmpl)}
-                              className={`w-full flex items-center gap-2.5 p-2 text-left rounded-xl border transition-all group cursor-pointer ${
+                              title="Arrastra este campo al formulario o haz clic para añadir"
+                              className={`w-full flex items-center gap-2.5 p-2 rounded-xl border transition-all group cursor-grab active:cursor-grabbing select-none hover:shadow-xs ${
                                 isSig
                                   ? 'border-indigo-300 bg-indigo-50/50 hover:bg-indigo-100/70'
                                   : 'border-slate-200 hover:border-blue-400 hover:bg-blue-50/40'
                               }`}
                             >
+                              <div className="text-slate-300 group-hover:text-blue-500 cursor-grab active:cursor-grabbing">
+                                <GripVertical className="w-3.5 h-3.5" />
+                              </div>
+
                               <div className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors shrink-0 ${
                                 isSig
                                   ? 'bg-indigo-600 text-white'
@@ -1210,6 +1332,7 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                               }`}>
                                 <Icon className="w-3.5 h-3.5" />
                               </div>
+
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center justify-between">
                                   <span className={`text-xs font-bold truncate ${
@@ -1217,11 +1340,13 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                                   }`}>
                                     {tmpl.title}
                                   </span>
-                                  <Plus className="w-3 h-3 text-slate-400 group-hover:text-blue-600 shrink-0 ml-1" />
+                                  <span className="text-[10px] font-semibold text-slate-400 group-hover:text-blue-600 shrink-0 ml-1">
+                                    +
+                                  </span>
                                 </div>
                                 <p className="text-[10px] text-slate-400 truncate">{tmpl.desc}</p>
                               </div>
-                            </button>
+                            </div>
                           );
                         })}
                       </div>
@@ -1256,7 +1381,7 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
               </div>
             </div>
 
-            {/* Center Canvas */}
+            {/* Center Canvas (Drop Area & Reorderable List) */}
             <div className="lg:col-span-8 space-y-6">
               {/* Form Metadata Card */}
               <div className="bg-white rounded-3xl p-6 border border-slate-200/90 shadow-xs space-y-4">
@@ -1289,13 +1414,16 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                 </div>
               </div>
 
-              {/* Fields List */}
+              {/* Fields List Header & Drop targets */}
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-bold text-slate-800 text-sm">
-                      Preguntas y Campos Configurados ({fields.length})
+                  <div>
+                    <h3 className="font-bold text-slate-800 text-sm flex items-center gap-1.5">
+                      <span>Preguntas del Formulario ({fields.length})</span>
                     </h3>
+                    <p className="text-[11px] text-slate-400">
+                      Usa el icono <strong>⠿</strong> para arrastrar y reordenar, o arrastra campos desde el catálogo izquierdo.
+                    </p>
                   </div>
 
                   <button
@@ -1309,18 +1437,30 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                 </div>
 
                 {fields.length === 0 ? (
-                  <div className="bg-white rounded-3xl border-2 border-dashed border-slate-300 p-8 text-center space-y-3">
-                    <p className="text-sm font-bold text-slate-800">No hay campos en el formulario todavía</p>
+                  <div
+                    onDragOver={(e) => { e.preventDefault(); setIsDraggingOverBottom(true); }}
+                    onDragLeave={() => setIsDraggingOverBottom(false)}
+                    onDrop={handleBottomDrop}
+                    className={`bg-white rounded-3xl border-2 border-dashed p-10 text-center space-y-3 transition-all ${
+                      isDraggingOverBottom
+                        ? 'border-blue-600 bg-blue-50 scale-[1.01]'
+                        : 'border-slate-300'
+                    }`}
+                  >
+                    <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto border border-blue-100">
+                      <GripVertical className="w-6 h-6" />
+                    </div>
+                    <p className="text-sm font-bold text-slate-800">Arrastra cualquier campo aquí</p>
                     <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                      Explora los 20 campos disponibles organizados por categorías (texto, selección, fecha/hora, validación, escalas y firma digital).
+                      Suelta aquí campos desde el panel izquierdo, o abre el catálogo completo de 20 campos.
                     </p>
                     <button
                       type="button"
                       onClick={() => setPickerModalOpen(true)}
-                      className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-semibold hover:bg-blue-700 shadow-sm"
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-semibold hover:bg-blue-700 shadow-sm cursor-pointer"
                     >
                       <Sparkles className="w-4 h-4" />
-                      <span>Abrir Catálogo de 20 Campos</span>
+                      <span>Explorar Catálogo de 20 Campos</span>
                     </button>
                   </div>
                 ) : (
@@ -1328,233 +1468,258 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                     const template = FIELD_TEMPLATES.find((t) => t.type === field.type) || FIELD_TEMPLATES[0];
                     const Icon = template.icon;
                     const isSig = field.type === 'signature';
+                    const isBeingDragged = draggedFieldIndex === idx;
+                    const isDragOverThis = dragOverFieldIndex === idx;
 
                     return (
-                      <div
-                        key={field.id || idx}
-                        className={`bg-white rounded-3xl border p-6 shadow-xs transition-colors ${
-                          isSig ? 'border-indigo-300 ring-2 ring-indigo-500/10' : 'border-slate-200 hover:border-slate-300'
-                        }`}
-                      >
-                        {/* Field Header */}
-                        <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-100">
-                          <div className="flex items-center gap-2">
-                            <span className="w-6 h-6 rounded-md bg-slate-100 text-slate-600 font-bold text-xs flex items-center justify-center">
-                              #{idx + 1}
-                            </span>
-                            <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-md ${
-                              isSig ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'bg-slate-100 text-slate-700'
-                            }`}>
-                              <Icon className="w-3.5 h-3.5 text-blue-600" />
-                              <span>{template.title}</span>
-                              <span className="text-[10px] text-slate-400 font-normal">({template.categoryName})</span>
-                            </span>
+                      <React.Fragment key={field.id || idx}>
+                        {/* Drop indicator bar above */}
+                        {isDragOverThis && dragOverPosition === 'above' && (
+                          <div className="h-2 w-full bg-gradient-to-r from-blue-500 to-indigo-600 rounded-full shadow-md animate-pulse my-1" />
+                        )}
+
+                        <div
+                          onDragOver={(e) => handleFieldDragOver(e, idx)}
+                          onDrop={(e) => handleFieldDrop(e, idx)}
+                          className={`bg-white rounded-3xl border p-6 shadow-xs transition-all relative ${
+                            isBeingDragged
+                              ? 'opacity-40 border-dashed border-blue-400 scale-[0.99]'
+                              : isSig
+                              ? 'border-indigo-300 ring-2 ring-indigo-500/10'
+                              : 'border-slate-200 hover:border-slate-300'
+                          }`}
+                        >
+                          {/* Field Header with Drag Handle */}
+                          <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-100">
+                            <div className="flex items-center gap-2">
+                              {/* Dedicated Drag & Drop Handle */}
+                              <div
+                                draggable
+                                onDragStart={(e) => handleDragStartField(e, idx)}
+                                onDragEnd={handleDragEnd}
+                                title="Arrastra para mover de posición dentro del formulario"
+                                className="p-1 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100 cursor-grab active:cursor-grabbing transition-colors"
+                              >
+                                <GripVertical className="w-4 h-4" />
+                              </div>
+
+                              <span className="w-6 h-6 rounded-md bg-slate-100 text-slate-600 font-bold text-xs flex items-center justify-center">
+                                #{idx + 1}
+                              </span>
+
+                              <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-md ${
+                                isSig ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'bg-slate-100 text-slate-700'
+                              }`}>
+                                <Icon className="w-3.5 h-3.5 text-blue-600" />
+                                <span>{template.title}</span>
+                                <span className="text-[10px] text-slate-400 font-normal">({template.categoryName})</span>
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-1">
+                              {/* Reorder Up Button (Accessible fallback) */}
+                              <button
+                                type="button"
+                                onClick={() => moveField(idx, 'up')}
+                                disabled={idx === 0}
+                                aria-label={`Mover campo #${idx + 1} hacia arriba`}
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100 disabled:opacity-30 cursor-pointer"
+                              >
+                                <ChevronUp className="w-4 h-4" />
+                              </button>
+
+                              {/* Reorder Down Button (Accessible fallback) */}
+                              <button
+                                type="button"
+                                onClick={() => moveField(idx, 'down')}
+                                disabled={idx === fields.length - 1}
+                                aria-label={`Mover campo #${idx + 1} hacia abajo`}
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100 disabled:opacity-30 cursor-pointer"
+                              >
+                                <ChevronDown className="w-4 h-4" />
+                              </button>
+
+                              {/* Delete Field */}
+                              <button
+                                type="button"
+                                onClick={() => removeField(idx)}
+                                aria-label={`Eliminar campo ${field.label || idx + 1}`}
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 ml-1 cursor-pointer"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
                           </div>
 
-                          <div className="flex items-center gap-1">
-                            {/* Reorder Up */}
-                            <button
-                              type="button"
-                              onClick={() => moveField(idx, 'up')}
-                              disabled={idx === 0}
-                              aria-label={`Mover campo #${idx + 1} hacia arriba`}
-                              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100 disabled:opacity-30 cursor-pointer"
-                            >
-                              <ChevronUp className="w-4 h-4" />
-                            </button>
-
-                            {/* Reorder Down */}
-                            <button
-                              type="button"
-                              onClick={() => moveField(idx, 'down')}
-                              disabled={idx === fields.length - 1}
-                              aria-label={`Mover campo #${idx + 1} hacia abajo`}
-                              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-800 hover:bg-slate-100 disabled:opacity-30 cursor-pointer"
-                            >
-                              <ChevronDown className="w-4 h-4" />
-                            </button>
-
-                            {/* Delete Field */}
-                            <button
-                              type="button"
-                              onClick={() => removeField(idx)}
-                              aria-label={`Eliminar campo ${field.label || idx + 1}`}
-                              className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 ml-1 cursor-pointer"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* Label & Required setting */}
-                        <div className="grid grid-cols-1 sm:grid-cols-12 gap-4 items-center">
-                          <div className="sm:col-span-8">
-                            <label className="block text-xs font-medium text-slate-600 mb-1" htmlFor={`field-label-${idx}`}>
-                              Etiqueta o Pregunta a Solicitar
-                            </label>
-                            <input
-                              id={`field-label-${idx}`}
-                              type="text"
-                              value={field.label}
-                              onChange={(e) => updateField(idx, { label: e.target.value })}
-                              placeholder="Ej. Nombre completo, firma, pasaporte..."
-                              className="w-full text-sm font-medium text-slate-900 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
-                            />
-                          </div>
-
-                          <div className="sm:col-span-4 flex items-center sm:justify-end pt-2 sm:pt-4">
-                            <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                          {/* Label & Required setting */}
+                          <div className="grid grid-cols-1 sm:grid-cols-12 gap-4 items-center">
+                            <div className="sm:col-span-8">
+                              <label className="block text-xs font-medium text-slate-600 mb-1" htmlFor={`field-label-${idx}`}>
+                                Etiqueta o Pregunta a Solicitar
+                              </label>
                               <input
-                                type="checkbox"
-                                checked={field.is_required}
-                                onChange={(e) => updateField(idx, { is_required: e.target.checked })}
-                                className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500 cursor-pointer"
+                                id={`field-label-${idx}`}
+                                type="text"
+                                value={field.label}
+                                onChange={(e) => updateField(idx, { label: e.target.value })}
+                                placeholder="Ej. Nombre completo, firma, pasaporte..."
+                                className="w-full text-sm font-medium text-slate-900 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
                               />
-                              <span className="text-xs font-semibold text-slate-700">Obligatorio</span>
-                            </label>
-                          </div>
-                        </div>
-
-                        {/* Placeholder configuration for text/number/email/phone/url */}
-                        {['text', 'textarea', 'number', 'email', 'phone', 'url'].includes(field.type) && (
-                          <div className="mt-3 pt-3 border-t border-slate-100">
-                            <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                              Texto de ayuda (Placeholder opcional)
-                            </label>
-                            <input
-                              type="text"
-                              value={field.placeholder || ''}
-                              onChange={(e) => updateField(idx, { placeholder: e.target.value })}
-                              placeholder="Texto gris tenue dentro de la casilla..."
-                              className="w-full text-xs px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white"
-                            />
-                          </div>
-                        )}
-
-                        {/* Hidden Field Value */}
-                        {field.type === 'hidden' && (
-                          <div className="mt-3 pt-3 border-t border-slate-100 bg-slate-50/70 p-3 rounded-xl">
-                            <label className="block text-xs font-bold text-slate-700 mb-1">
-                              Valor Oculto por Defecto (se guardará automáticamente):
-                            </label>
-                            <input
-                              type="text"
-                              value={field.default_value || ''}
-                              onChange={(e) => updateField(idx, { default_value: e.target.value })}
-                              placeholder="Ej. ID_CAMPAÑA_2026"
-                              className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-xl"
-                            />
-                          </div>
-                        )}
-
-                        {/* File Upload Formats */}
-                        {field.type === 'file' && (
-                          <div className="mt-3 pt-3 border-t border-slate-100 bg-slate-50/70 p-3 rounded-xl">
-                            <label className="block text-xs font-bold text-slate-700 mb-1">
-                              Extensiones permitidas (separadas por coma):
-                            </label>
-                            <input
-                              type="text"
-                              value={field.allowed_file_types || '.pdf, .png, .jpg, .jpeg'}
-                              onChange={(e) => updateField(idx, { allowed_file_types: e.target.value })}
-                              className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-xl"
-                            />
-                          </div>
-                        )}
-
-                        {/* Rating scale configuration */}
-                        {field.type === 'rating' && (
-                          <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-4 bg-slate-50/70 p-3 rounded-xl">
-                            <span className="text-xs font-bold text-slate-700">Rango de Calificación:</span>
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => updateField(idx, { rating_max: 5 })}
-                                className={`px-3 py-1 text-xs font-bold rounded-lg cursor-pointer ${
-                                  (field.rating_max || 5) === 5 ? 'bg-blue-600 text-white' : 'bg-white border text-slate-700'
-                                }`}
-                              >
-                                1 a 5 Estrellas
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => updateField(idx, { rating_max: 10 })}
-                                className={`px-3 py-1 text-xs font-bold rounded-lg cursor-pointer ${
-                                  field.rating_max === 10 ? 'bg-blue-600 text-white' : 'bg-white border text-slate-700'
-                                }`}
-                              >
-                                1 a 10 Estrellas
-                              </button>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Select, Radio, Checkbox Options Manager */}
-                        {['select', 'radio', 'checkbox'].includes(field.type) && (
-                          <div className="mt-4 pt-4 border-t border-slate-100 bg-slate-50/70 p-4 rounded-2xl">
-                            <label className="block text-xs font-bold text-slate-700 mb-2">
-                              Opciones configuradas ({field.options?.length || 0}):
-                            </label>
-
-                            <div className="space-y-2 mb-3">
-                              {(field.options || []).map((opt, optIdx) => (
-                                <div key={optIdx} className="flex items-center gap-2">
-                                  <div className="w-2 h-2 rounded-full bg-slate-300 shrink-0" />
-                                  <span className="text-xs font-medium text-slate-800 bg-white border border-slate-200 px-3 py-1.5 rounded-xl flex-1">
-                                    {opt}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleRemoveOption(idx, optIdx)}
-                                    aria-label={`Eliminar opción ${opt}`}
-                                    className="p-1 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 cursor-pointer"
-                                  >
-                                    <X className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                              ))}
                             </div>
 
-                            {/* Add Option Input */}
-                            <div className="flex items-center gap-2">
+                            <div className="sm:col-span-4 flex items-center sm:justify-end pt-2 sm:pt-4">
+                              <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={field.is_required}
+                                  onChange={(e) => updateField(idx, { is_required: e.target.checked })}
+                                  className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500 cursor-pointer"
+                                />
+                                <span className="text-xs font-semibold text-slate-700">Obligatorio</span>
+                              </label>
+                            </div>
+                          </div>
+
+                          {/* Placeholder configuration for text/number/email/phone/url */}
+                          {['text', 'textarea', 'number', 'email', 'phone', 'url'].includes(field.type) && (
+                            <div className="mt-3 pt-3 border-t border-slate-100">
+                              <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                                Texto de ayuda (Placeholder opcional)
+                              </label>
                               <input
                                 type="text"
-                                value={newOptionBuffers[field.id] || ''}
-                                onChange={(e) =>
-                                  setNewOptionBuffers((prev) => ({
-                                    ...prev,
-                                    [field.id]: e.target.value,
-                                  }))
-                                }
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') {
-                                    e.preventDefault();
-                                    handleAddOption(idx, field.id);
-                                  }
-                                }}
-                                placeholder="Escribe una opción y pulsa Añadir..."
-                                className="flex-1 text-xs px-3 py-2 bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                value={field.placeholder || ''}
+                                onChange={(e) => updateField(idx, { placeholder: e.target.value })}
+                                placeholder="Texto gris tenue dentro de la casilla..."
+                                className="w-full text-xs px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white"
                               />
-                              <button
-                                type="button"
-                                onClick={() => handleAddOption(idx, field.id)}
-                                className="px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer"
-                              >
-                                Añadir Opción
-                              </button>
                             </div>
-                          </div>
-                        )}
+                          )}
 
-                        {/* Matrix Rows & Columns Manager */}
-                        {['matrix_radio', 'matrix_checkbox'].includes(field.type) && (
-                          <div className="mt-4 pt-4 border-t border-slate-100 bg-slate-50/70 p-4 rounded-2xl space-y-4">
-                            {/* Rows */}
-                            <div>
-                              <label className="block text-xs font-bold text-slate-700 mb-2">
-                                Filas (Preguntas a evaluar):
+                          {/* Hidden Field Value */}
+                          {field.type === 'hidden' && (
+                            <div className="mt-3 pt-3 border-t border-slate-100 bg-slate-50/70 p-3 rounded-xl">
+                              <label className="block text-xs font-bold text-slate-700 mb-1">
+                                Valor Oculto por Defecto (se guardará automáticamente):
                               </label>
-                              <div className="space-y-1.5 mb-2">
+                              <input
+                                type="text"
+                                value={field.default_value || ''}
+                                onChange={(e) => updateField(idx, { default_value: e.target.value })}
+                                placeholder="Ej. ID_CAMPAÑA_2026"
+                                className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-xl"
+                              />
+                            </div>
+                          )}
+
+                          {/* File Upload Formats */}
+                          {field.type === 'file' && (
+                            <div className="mt-3 pt-3 border-t border-slate-100 bg-slate-50/70 p-3 rounded-xl">
+                              <label className="block text-xs font-bold text-slate-700 mb-1">
+                                Extensiones permitidas (separadas por coma):
+                              </label>
+                              <input
+                                type="text"
+                                value={field.allowed_file_types || '.pdf, .png, .jpg, .jpeg'}
+                                onChange={(e) => updateField(idx, { allowed_file_types: e.target.value })}
+                                className="w-full text-xs px-3 py-2 bg-white border border-slate-300 rounded-xl"
+                              />
+                            </div>
+                          )}
+
+                          {/* Rating scale configuration */}
+                          {field.type === 'rating' && (
+                            <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-4 bg-slate-50/70 p-3 rounded-xl">
+                              <span className="text-xs font-bold text-slate-700">Rango de Calificación:</span>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => updateField(idx, { rating_max: 5 })}
+                                  className={`px-3 py-1 text-xs font-bold rounded-lg cursor-pointer ${
+                                    (field.rating_max || 5) === 5 ? 'bg-blue-600 text-white' : 'bg-white border text-slate-700'
+                                  }`}
+                                >
+                                  1 a 5 Estrellas
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => updateField(idx, { rating_max: 10 })}
+                                  className={`px-3 py-1 text-xs font-bold rounded-lg cursor-pointer ${
+                                    field.rating_max === 10 ? 'bg-blue-600 text-white' : 'bg-white border text-slate-700'
+                                  }`}
+                                >
+                                  1 a 10 Estrellas
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Select, Radio, Checkbox Options Manager */}
+                          {['select', 'radio', 'checkbox'].includes(field.type) && (
+                            <div className="mt-4 pt-4 border-t border-slate-100 bg-slate-50/70 p-4 rounded-2xl">
+                              <label className="block text-xs font-bold text-slate-700 mb-2">
+                                Opciones configuradas ({field.options?.length || 0}):
+                              </label>
+
+                              <div className="space-y-2 mb-3">
+                                {(field.options || []).map((opt, optIdx) => (
+                                  <div key={optIdx} className="flex items-center gap-2">
+                                    <div className="w-2 h-2 rounded-full bg-slate-300 shrink-0" />
+                                    <span className="text-xs font-medium text-slate-800 bg-white border border-slate-200 px-3 py-1.5 rounded-xl flex-1">
+                                      {opt}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRemoveOption(idx, optIdx)}
+                                      aria-label={`Eliminar opción ${opt}`}
+                                      className="p-1 rounded-md text-slate-400 hover:text-red-600 hover:bg-red-50 cursor-pointer"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+
+                              {/* Add Option Input */}
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={newOptionBuffers[field.id] || ''}
+                                  onChange={(e) =>
+                                    setNewOptionBuffers((prev) => ({
+                                      ...prev,
+                                      [field.id]: e.target.value,
+                                    }))
+                                  }
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      handleAddOption(idx, field.id);
+                                    }
+                                  }}
+                                  placeholder="Escribe una opción y pulsa Añadir..."
+                                  className="flex-1 text-xs px-3 py-2 bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => handleAddOption(idx, field.id)}
+                                  className="px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+                                >
+                                  Añadir Opción
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Matrix Rows & Columns Manager */}
+                          {['matrix_radio', 'matrix_checkbox'].includes(field.type) && (
+                            <div className="mt-4 pt-4 border-t border-slate-100 bg-slate-50/70 p-4 rounded-2xl space-y-4">
+                              {/* Rows */}
+                              <div>
+                                <label className="block text-xs font-bold text-slate-700 mb-2">
+                                  Filas (Preguntas a evaluar):
+                                </label>
+                                <div className="space-y-1.5 mb-2">
                                 {(field.matrix_rows || []).map((row, rIdx) => (
                                   <div key={rIdx} className="flex items-center gap-2">
                                     <span className="text-xs text-slate-700 bg-white border border-slate-200 px-3 py-1 rounded-lg flex-1">
@@ -1627,18 +1792,48 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                           </div>
                         )}
 
-                        {/* Digital Signature info banner */}
-                        {field.type === 'signature' && (
-                          <div className="mt-3 p-3 bg-indigo-50 border border-indigo-200 rounded-xl text-xs text-indigo-900 flex items-center gap-2">
-                            <PenTool className="w-4 h-4 text-indigo-600 shrink-0" />
-                            <span>
-                              Este campo renderiza un lienzo táctil HTML5 de alta fidelidad para que el cliente firme a mano alzada en línea desde su celular o ratón.
-                            </span>
-                          </div>
+                          {/* Digital Signature info banner */}
+                          {field.type === 'signature' && (
+                            <div className="mt-3 p-3 bg-indigo-50 border border-indigo-200 rounded-xl text-xs text-indigo-900 flex items-center gap-2">
+                              <PenTool className="w-4 h-4 text-indigo-600 shrink-0" />
+                              <span>
+                                Este campo renderiza un lienzo táctil HTML5 de alta fidelidad para que el cliente firme a mano alzada en línea desde su celular o ratón.
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Drop indicator bar below */}
+                        {isDragOverThis && dragOverPosition === 'below' && (
+                          <div className="h-2 w-full bg-gradient-to-r from-blue-500 to-indigo-600 rounded-full shadow-md animate-pulse my-1" />
                         )}
-                      </div>
+                      </React.Fragment>
                     );
                   })
+                )}
+
+                {/* Bottom Drop Zone */}
+                {fields.length > 0 && (
+                  <div
+                    onDragOver={(e) => { e.preventDefault(); setIsDraggingOverBottom(true); }}
+                    onDragLeave={() => setIsDraggingOverBottom(false)}
+                    onDrop={handleBottomDrop}
+                    className={`p-6 rounded-3xl border-2 border-dashed transition-all text-center flex flex-col items-center justify-center gap-2 cursor-pointer ${
+                      isDraggingOverBottom
+                        ? 'border-blue-600 bg-blue-50/80 scale-[1.01] shadow-md'
+                        : isDraggingAny
+                        ? 'border-blue-400 bg-blue-50/20'
+                        : 'border-slate-300 bg-slate-50/40 hover:border-slate-400'
+                    }`}
+                  >
+                    <Plus className="w-5 h-5 text-blue-600" />
+                    <p className="text-xs font-bold text-slate-800">
+                      Arrastra y suelta aquí cualquier campo del catálogo
+                    </p>
+                    <p className="text-[11px] text-slate-400">
+                      O haz clic en el catálogo lateral para agregarlo al final del formulario
+                    </p>
+                  </div>
                 )}
               </div>
             </div>
@@ -1657,7 +1852,7 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                   <span>Catálogo Completo: 20 Campos en 6 Categorías</span>
                 </h3>
                 <p className="text-xs text-slate-500 mt-1">
-                  Selecciona cualquier campo para incorporarlo de inmediato a tu formulario.
+                  Arrastra cualquier campo hacia el formulario o haz clic para agregarlo al final.
                 </p>
               </div>
               <button
@@ -1687,11 +1882,13 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                         const isSig = field.type === 'signature';
 
                         return (
-                          <button
+                          <div
                             key={field.type}
-                            type="button"
+                            draggable
+                            onDragStart={(e) => handleDragStartTemplate(e, field)}
+                            onDragEnd={handleDragEnd}
                             onClick={() => addField(field)}
-                            className={`p-3.5 rounded-2xl border text-left flex flex-col justify-between transition-all hover:scale-[1.02] cursor-pointer ${
+                            className={`p-3.5 rounded-2xl border text-left flex flex-col justify-between transition-all hover:scale-[1.02] cursor-grab active:cursor-grabbing select-none ${
                               isSig
                                 ? 'bg-gradient-to-br from-indigo-50 to-blue-50 border-indigo-300 hover:border-indigo-500 ring-2 ring-indigo-500/10'
                                 : 'bg-slate-50/70 border-slate-200 hover:bg-blue-50/40 hover:border-blue-400'
@@ -1703,8 +1900,9 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                               }`}>
                                 <Icon className="w-4 h-4" />
                               </div>
-                              <span className="text-[10px] font-bold text-slate-400 bg-white/80 px-2 py-0.5 rounded-full border border-slate-200">
-                                + Añadir
+                              <span className="text-[10px] font-bold text-slate-400 bg-white/80 px-2 py-0.5 rounded-full border border-slate-200 flex items-center gap-1">
+                                <GripVertical className="w-3 h-3 text-slate-400" />
+                                <span>Arrastrar / + Añadir</span>
                               </span>
                             </div>
 
@@ -1716,7 +1914,7 @@ export const FormEditorView: React.FC<FormEditorViewProps> = ({ formId, onNaviga
                                 {field.desc}
                               </p>
                             </div>
-                          </button>
+                          </div>
                         );
                       })}
                     </div>
